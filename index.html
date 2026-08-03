@@ -1,0 +1,1727 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShareGuard MVP</title>
+  <style>
+    :root {
+      --bg: #f4f7fa;
+      --surface: #ffffff;
+      --surface-2: #f8fafc;
+      --ink: #18212f;
+      --muted: #647084;
+      --faint: #8b97aa;
+      --line: #dde4ee;
+      --primary: #2563eb;
+      --primary-soft: #eaf1ff;
+      --accent: #0f766e;
+      --accent-soft: #e7f6f3;
+      --warn: #d97706;
+      --warn-soft: #fff5dd;
+      --danger: #dc2626;
+      --danger-soft: #fff0f0;
+      --good: #16a34a;
+      --good-soft: #eaf8ef;
+      --shadow: 0 14px 40px rgba(24, 33, 47, 0.09);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      line-height: 1.5;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      background: #111827;
+      color: #e5e7eb;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 6px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #2563eb, #0f766e);
+      color: white;
+      font-weight: 900;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 18px;
+    }
+
+    .brand span {
+      display: block;
+      color: #9ca3af;
+      font-size: 12px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav button {
+      min-height: 42px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #cbd5e1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-align: left;
+      font-weight: 700;
+    }
+
+    .nav button:hover,
+    .nav button.active {
+      background: rgba(255, 255, 255, 0.1);
+      color: #ffffff;
+    }
+
+    .nav .glyph {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.1);
+      font-size: 12px;
+    }
+
+    .side-status {
+      margin-top: auto;
+      padding: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .side-status b,
+    .side-status span {
+      display: block;
+    }
+
+    .side-status b {
+      font-size: 13px;
+      color: white;
+    }
+
+    .side-status span {
+      margin-top: 3px;
+      color: #9ca3af;
+      font-size: 12px;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 28px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18px;
+      margin-bottom: 20px;
+    }
+
+    .topbar h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.2;
+    }
+
+    .topbar p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      max-width: 760px;
+    }
+
+    .top-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .notice {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 14px;
+      margin-bottom: 18px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--warn);
+      border-radius: 8px;
+      background: var(--warn-soft);
+    }
+
+    .notice.good {
+      border-left-color: var(--good);
+      background: var(--good-soft);
+    }
+
+    .notice b {
+      display: block;
+      font-size: 14px;
+    }
+
+    .notice span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel,
+    .card,
+    .table {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 1px 0 rgba(24, 33, 47, 0.03);
+    }
+
+    .panel {
+      padding: 16px;
+    }
+
+    .panel + .panel {
+      margin-top: 16px;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .panel-head h2,
+    .panel-head h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .panel-head p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .card {
+      padding: 12px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .grid.cols-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .item-card {
+      display: grid;
+      grid-template-columns: 156px minmax(0, 1fr);
+      gap: 14px;
+      overflow: hidden;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .item-card:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow);
+    }
+
+    .asset {
+      min-height: 128px;
+      border-radius: 8px;
+      background-color: #dbe5f1;
+      background-position: center;
+      background-size: cover;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .asset::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, transparent 45%, rgba(0, 0, 0, 0.45));
+    }
+
+    .asset .asset-tag {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      z-index: 1;
+      padding: 4px 7px;
+      border-radius: 7px;
+      color: white;
+      background: rgba(17, 24, 39, 0.72);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .item-body {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .item-body h3,
+    .item-body h4 {
+      margin: 0;
+      font-size: 17px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .price {
+      color: var(--primary);
+      font-weight: 900;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 9px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .pill.primary {
+      background: var(--primary-soft);
+      border-color: #c9dbff;
+      color: var(--primary);
+    }
+
+    .pill.accent {
+      background: var(--accent-soft);
+      border-color: #bce8df;
+      color: var(--accent);
+    }
+
+    .pill.warn {
+      background: var(--warn-soft);
+      border-color: #ffe2a6;
+      color: var(--warn);
+    }
+
+    .pill.danger {
+      background: var(--danger-soft);
+      border-color: #ffcaca;
+      color: var(--danger);
+    }
+
+    .pill.good {
+      background: var(--good-soft);
+      border-color: #c8efd3;
+      color: var(--good);
+    }
+
+    .btn {
+      min-height: 38px;
+      padding: 0 13px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: var(--primary);
+      color: white;
+      font-weight: 900;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      text-decoration: none;
+    }
+
+    .btn:hover {
+      filter: brightness(0.97);
+    }
+
+    .btn.secondary {
+      background: var(--surface);
+      border-color: var(--line);
+      color: var(--ink);
+    }
+
+    .btn.accent {
+      background: var(--accent);
+    }
+
+    .btn.good {
+      background: var(--good);
+    }
+
+    .btn.warn {
+      background: var(--warn);
+    }
+
+    .btn.danger {
+      background: var(--danger);
+    }
+
+    .btn.small {
+      min-height: 32px;
+      padding: 0 10px;
+      font-size: 13px;
+    }
+
+    .btn:disabled,
+    .btn.disabled {
+      background: #c8d0dc;
+      border-color: #c8d0dc;
+      color: #ffffff;
+      cursor: not-allowed;
+      filter: none;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .field input,
+    .field select,
+    .field textarea {
+      width: 100%;
+      min-height: 40px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: white;
+      color: var(--ink);
+    }
+
+    .field textarea {
+      min-height: 96px;
+      resize: vertical;
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .filters input {
+      min-width: 220px;
+      flex: 1;
+      min-height: 40px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .segmented {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .segmented button {
+      min-height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .segmented button.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+
+    .metric-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .metric:last-child {
+      border-bottom: 0;
+    }
+
+    .metric b {
+      color: var(--ink);
+      text-align: right;
+    }
+
+    .avatar {
+      width: 42px;
+      height: 42px;
+      flex: 0 0 42px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: linear-gradient(135deg, #2563eb, #0f766e);
+      font-weight: 900;
+    }
+
+    .profile-row,
+    .chat-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .progress {
+      height: 9px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #e5e7eb;
+    }
+
+    .progress span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--primary));
+    }
+
+    .timeline {
+      display: grid;
+      gap: 10px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+    }
+
+    .dot {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #d8e0eb;
+      color: white;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .step.done .dot {
+      background: var(--good);
+    }
+
+    .step.active .dot {
+      background: var(--primary);
+    }
+
+    .step b {
+      display: block;
+      font-size: 14px;
+    }
+
+    .step span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .qr {
+      width: 190px;
+      height: 190px;
+      margin: 12px auto;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 5px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: white;
+    }
+
+    .qr span {
+      border-radius: 3px;
+      background: #111827;
+    }
+
+    .qr span.empty {
+      background: transparent;
+    }
+
+    .photo-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+    }
+
+    .photo-slot {
+      aspect-ratio: 1;
+      min-height: 70px;
+      border: 1px dashed #b9c3d1;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: var(--surface-2);
+      color: var(--muted);
+      font-weight: 900;
+      text-align: center;
+      font-size: 12px;
+    }
+
+    .photo-slot.filled {
+      border-style: solid;
+      border-color: #bce8df;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .chat-shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .chat-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .chat-item {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: white;
+      text-align: left;
+    }
+
+    .chat-item.active {
+      border-color: #c9dbff;
+      background: var(--primary-soft);
+    }
+
+    .messages {
+      min-height: 390px;
+      max-height: 58vh;
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .bubble {
+      max-width: 76%;
+      padding: 9px 11px;
+      border-radius: 8px;
+      background: white;
+      border: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .bubble.me {
+      align-self: flex-end;
+      color: white;
+      background: var(--primary);
+      border-color: var(--primary);
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+    }
+
+    .table th,
+    .table td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-size: 14px;
+      vertical-align: top;
+    }
+
+    .table th {
+      color: var(--muted);
+      background: var(--surface-2);
+      font-size: 12px;
+    }
+
+    .table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .empty {
+      padding: 28px 16px;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed #b9c3d1;
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+
+    .mobile-nav {
+      display: none;
+    }
+
+    @media (max-width: 1040px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .grid.cols-3 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 860px) {
+      .app {
+        display: block;
+      }
+
+      .sidebar {
+        display: none;
+      }
+
+      .main {
+        padding: 18px 14px 86px;
+      }
+
+      .topbar {
+        display: grid;
+      }
+
+      .top-actions {
+        justify-content: flex-start;
+      }
+
+      .item-card,
+      .chat-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .asset {
+        min-height: 180px;
+      }
+
+      .grid.cols-2,
+      .grid.cols-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .mobile-nav {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 20;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 1px;
+        padding: 7px;
+        border-top: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(12px);
+      }
+
+      .mobile-nav button {
+        min-height: 50px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .mobile-nav button.active {
+        color: var(--primary);
+        background: var(--primary-soft);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    const ASSETS = {
+      camera: "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=900&q=80",
+      game: "https://images.unsplash.com/photo-1606813907291-d86efa9b94db?auto=format&fit=crop&w=900&q=80",
+      tent: "https://images.unsplash.com/photo-1504280390367-361c6d9f38f4?auto=format&fit=crop&w=900&q=80",
+      projector: "https://images.unsplash.com/photo-1565814329452-e1efa11c5b89?auto=format&fit=crop&w=900&q=80"
+    };
+
+    const navItems = [
+      ["home", "홈", "H"],
+      ["register", "등록", "I"],
+      ["reservations", "예약", "R"],
+      ["chat", "채팅", "C"],
+      ["qr", "QR", "Q"],
+      ["profile", "프로필", "P"],
+      ["admin", "관리자", "A"]
+    ];
+
+    const mobileNav = ["home", "register", "reservations", "chat", "profile"];
+
+    const initialState = {
+      view: "home",
+      query: "",
+      category: "전체",
+      sort: "distance",
+      currentUserId: 2,
+      selectedItemId: 501,
+      selectedChatId: 1,
+      users: [
+        { id: 1, name: "김민수", role: "대여자", verified: true, trust: 850, rating: 4.9, deals: 28, noAccidentDays: 120 },
+        { id: 2, name: "이지수", role: "차용자", verified: false, trust: 780, rating: 4.8, deals: 12, noAccidentDays: 64 },
+        { id: 99, name: "관리자", role: "관리자", verified: true, trust: 1000, rating: 5.0, deals: 0, noAccidentDays: 0 }
+      ],
+      items: [
+        {
+          id: 501,
+          title: "소니 A7III 풀프레임 미러리스",
+          category: "카메라",
+          description: "렌즈, 배터리 2개, 충전기 포함. 대여 전후 사진 기록 후 안전하게 거래합니다.",
+          price: 50000,
+          deposit: 200000,
+          distance: 520,
+          location: "강남구 역삼동",
+          ownerId: 1,
+          status: "AVAILABLE",
+          image: "camera"
+        },
+        {
+          id: 502,
+          title: "PS5 디지털 에디션",
+          category: "게임기",
+          description: "듀얼센스 2개와 인기 타이틀 3종을 함께 제공합니다.",
+          price: 30000,
+          deposit: 150000,
+          distance: 1180,
+          location: "서초구 서초동",
+          ownerId: 1,
+          status: "AVAILABLE",
+          image: "game"
+        },
+        {
+          id: 503,
+          title: "캠핑용 텐트 6인용",
+          category: "캠핑",
+          description: "방수 플라이와 그라운드시트 포함. 구성품 체크리스트를 제공합니다.",
+          price: 25000,
+          deposit: 100000,
+          distance: 2100,
+          location: "송파구 잠실동",
+          ownerId: 1,
+          status: "AVAILABLE",
+          image: "tent"
+        },
+        {
+          id: 504,
+          title: "캠핑용 빔프로젝터",
+          category: "IT",
+          description: "HDMI 케이블, 삼각대, 전용 파우치를 포함합니다.",
+          price: 15000,
+          deposit: 80000,
+          distance: 850,
+          location: "강남구 논현동",
+          ownerId: 1,
+          status: "AVAILABLE",
+          image: "projector"
+        }
+      ],
+      reservations: [],
+      contracts: [],
+      chats: [
+        {
+          id: 1,
+          itemId: 501,
+          participants: [1, 2],
+          messages: [
+            { from: 2, text: "안녕하세요. 주말에 카메라 대여 가능할까요?" },
+            { from: 1, text: "가능합니다. 5월 1일부터 3일까지 비워둘게요." },
+            { from: 2, text: "거래 장소는 역삼역 근처가 괜찮습니다." }
+          ]
+        }
+      ],
+      reviews: [
+        { id: 1, contractId: 0, from: "이지수", toUserId: 1, rating: 5, text: "카메라 상태가 좋고 약속 시간이 정확했어요." }
+      ],
+      reports: []
+    };
+
+    const root = document.getElementById("root");
+
+    function loadState() {
+      try {
+        const stored = localStorage.getItem("shareguard-mvp");
+        return stored ? normalize(JSON.parse(stored)) : structuredClone(initialState);
+      } catch (_) {
+        return structuredClone(initialState);
+      }
+    }
+
+    function normalize(state) {
+      const base = structuredClone(initialState);
+      return { ...base, ...state };
+    }
+
+    let state = loadState();
+
+    function saveState() {
+      localStorage.setItem("shareguard-mvp", JSON.stringify(state));
+    }
+
+    function money(value) {
+      return new Intl.NumberFormat("ko-KR").format(value) + "원";
+    }
+
+    function dateDays(start, end) {
+      const a = new Date(start);
+      const b = new Date(end);
+      const ms = b.getTime() - a.getTime();
+      return Math.max(1, Math.round(ms / 86400000) + 1);
+    }
+
+    function nextId(collection) {
+      return collection.reduce((max, item) => Math.max(max, item.id || 0), 0) + 1;
+    }
+
+    function currentUser() {
+      return state.users.find((user) => user.id === state.currentUserId);
+    }
+
+    function ownerOf(item) {
+      return state.users.find((user) => user.id === item.ownerId);
+    }
+
+    function selectedItem() {
+      return state.items.find((item) => item.id === state.selectedItemId) || state.items[0];
+    }
+
+    function latestContract() {
+      return state.contracts[state.contracts.length - 1] || null;
+    }
+
+    function contractForReservation(reservationId) {
+      return state.contracts.find((contract) => contract.reservationId === reservationId);
+    }
+
+    function statusLabel(status) {
+      return {
+        PENDING: "승인 대기",
+        APPROVED: "예약 승인",
+        PAID: "결제 완료",
+        SIGNED: "계약 완료",
+        READY: "대여 준비",
+        RENTING: "대여중",
+        COMPLETED: "반납 완료",
+        DISPUTED: "분쟁중"
+      }[status] || status;
+    }
+
+    function statusPill(status) {
+      const tone = {
+        PENDING: "warn",
+        APPROVED: "primary",
+        PAID: "primary",
+        SIGNED: "accent",
+        READY: "accent",
+        RENTING: "accent",
+        COMPLETED: "good",
+        DISPUTED: "danger"
+      }[status] || "";
+      return `<span class="pill ${tone}">${statusLabel(status)}</span>`;
+    }
+
+    function pageTitle() {
+      return {
+        home: ["위치 기반 물품 탐색", "반경 내 물품을 가격, 거리, 카테고리 기준으로 찾고 바로 예약합니다."],
+        register: ["물품 등록", "사진, 가격, 보증금, 거래 위치를 입력해 대여 가능한 물품을 등록합니다."],
+        reservations: ["예약 및 거래 관리", "예약 승인부터 에스크로 결제, 계약, 반납, 환급까지 한 화면에서 처리합니다."],
+        chat: ["실시간 채팅", "대여 조건, 장소, 시간을 거래 당사자끼리 조율합니다."],
+        qr: ["QR 거래 인증", "상태 사진 업로드 후 QR 인증으로 대여 시작과 반납 완료를 전환합니다."],
+        profile: ["프로필 및 신뢰 지수", "거래 이력, 평점, 본인 인증, 무사고 기록으로 신뢰 점수를 관리합니다."],
+        admin: ["관리자 분쟁 처리", "신고 큐를 검토하고 환급 보류, 차감, 계정 제재를 처리합니다."]
+      }[state.view] || ["ShareGuard", ""];
+    }
+
+    function render() {
+      const [title, subtitle] = pageTitle();
+      const user = currentUser();
+      root.innerHTML = `
+        <div class="app">
+          <aside class="sidebar">
+            <div class="brand">
+              <div class="brand-mark">SG</div>
+              <div><strong>ShareGuard</strong><span>C2C 안전 대여 플랫폼</span></div>
+            </div>
+            <nav class="nav">${navItems.map(([id, label, glyph]) => navButton(id, label, glyph)).join("")}</nav>
+            <div class="side-status">
+              <b>${user.name} · ${user.role}</b>
+              <span>${user.verified ? "본인 인증 완료" : "본인 인증 필요"} · 신뢰 지수 ${user.trust}</span>
+            </div>
+          </aside>
+          <main class="main">
+            <div class="topbar">
+              <div>
+                <h1>${title}</h1>
+                <p>${subtitle}</p>
+              </div>
+              <div class="top-actions">
+                <button class="btn secondary small" data-action="nav" data-view="profile">내 신뢰 지수</button>
+                <button class="btn secondary small" data-action="reset">데모 초기화</button>
+              </div>
+            </div>
+            ${authNotice(user)}
+            ${viewMarkup()}
+          </main>
+          <nav class="mobile-nav">${mobileNav.map((id) => mobileButton(id)).join("")}</nav>
+        </div>
+      `;
+      bindEvents();
+    }
+
+    function navButton(id, label, glyph) {
+      return `<button class="${state.view === id ? "active" : ""}" data-action="nav" data-view="${id}"><span class="glyph">${glyph}</span>${label}</button>`;
+    }
+
+    function mobileButton(id) {
+      const found = navItems.find((item) => item[0] === id);
+      return `<button class="${state.view === id ? "active" : ""}" data-action="nav" data-view="${id}">${found[1]}</button>`;
+    }
+
+    function authNotice(user) {
+      if (user.verified) {
+        return `<div class="notice good"><div><b>본인 인증 완료</b><span>물품 등록, 예약, 에스크로 결제, QR 인증을 진행할 수 있습니다.</span></div><button class="btn secondary small" data-action="unverify">인증 해제</button></div>`;
+      }
+      return `<div class="notice"><div><b>본인 인증이 필요합니다</b><span>명세서 AUTH-03 기준으로 미인증 사용자는 물품 등록과 거래 진행이 차단됩니다.</span></div><button class="btn small" data-action="verify">본인 인증 완료</button></div>`;
+    }
+
+    function viewMarkup() {
+      if (state.view === "home") return homeView();
+      if (state.view === "register") return registerView();
+      if (state.view === "reservations") return reservationsView();
+      if (state.view === "chat") return chatView();
+      if (state.view === "qr") return qrView();
+      if (state.view === "profile") return profileView();
+      if (state.view === "admin") return adminView();
+      return homeView();
+    }
+
+    function filteredItems() {
+      const query = state.query.trim().toLowerCase();
+      let items = state.items.filter((item) => {
+        const matchesCategory = state.category === "전체" || item.category === state.category;
+        const matchesQuery = !query || `${item.title} ${item.description} ${item.location}`.toLowerCase().includes(query);
+        return matchesCategory && matchesQuery;
+      });
+      items = items.sort((a, b) => {
+        if (state.sort === "price") return a.price - b.price;
+        if (state.sort === "trust") return ownerOf(b).trust - ownerOf(a).trust;
+        return a.distance - b.distance;
+      });
+      return items;
+    }
+
+    function homeView() {
+      const categories = ["전체", "카메라", "게임기", "캠핑", "IT"];
+      const item = selectedItem();
+      return `
+        <div class="layout">
+          <section class="panel">
+            <div class="filters">
+              <input id="searchInput" value="${state.query}" placeholder="물품명, 위치, 설명 검색">
+              <div class="segmented">${categories.map((category) => `<button class="${state.category === category ? "active" : ""}" data-action="category" data-category="${category}">${category}</button>`).join("")}</div>
+              <select id="sortSelect" aria-label="정렬">
+                <option value="distance" ${state.sort === "distance" ? "selected" : ""}>거리순</option>
+                <option value="price" ${state.sort === "price" ? "selected" : ""}>가격순</option>
+                <option value="trust" ${state.sort === "trust" ? "selected" : ""}>신뢰순</option>
+              </select>
+            </div>
+            <div class="grid">${filteredItems().map(itemCard).join("") || `<div class="empty">검색 결과가 없습니다.</div>`}</div>
+          </section>
+          <aside>
+            ${itemDetailCard(item)}
+            ${apiSnapshot()}
+          </aside>
+        </div>
+      `;
+    }
+
+    function itemCard(item) {
+      const owner = ownerOf(item);
+      return `
+        <article class="card item-card">
+          <div class="asset" style="background-image:url('${ASSETS[item.image]}')"><span class="asset-tag">${item.category}</span></div>
+          <div class="item-body">
+            <div>
+              <h3>${item.title}</h3>
+              <div class="meta">${item.location} · ${item.distance}m · ${owner.name} 신뢰 ${owner.trust}</div>
+            </div>
+            <p class="meta">${item.description}</p>
+            <div class="pill-row">
+              <span class="pill primary">${money(item.price)} /일</span>
+              <span class="pill">보증금 ${money(item.deposit)}</span>
+              <span class="pill accent">${item.status === "AVAILABLE" ? "대여 가능" : "대여 제한"}</span>
+            </div>
+            <div class="pill-row">
+              <button class="btn secondary small" data-action="select-item" data-id="${item.id}">상세 보기</button>
+              <button class="btn small" data-action="select-item-reserve" data-id="${item.id}">대여 신청</button>
+            </div>
+          </div>
+        </article>
+      `;
+    }
+
+    function itemDetailCard(item) {
+      const owner = ownerOf(item);
+      const days = dateDays("2026-05-01", "2026-05-03");
+      const user = currentUser();
+      const discount = user.trust >= 850 ? Math.round(item.deposit * 0.1) : 0;
+      const payable = item.price * days + item.deposit - discount;
+      return `
+        <section class="panel">
+          <div class="asset" style="min-height:220px;background-image:url('${ASSETS[item.image]}')"><span class="asset-tag">${item.category}</span></div>
+          <div class="panel-head" style="margin-top:14px">
+            <div>
+              <h2>${item.title}</h2>
+              <p>${item.location} · 현재 위치에서 ${item.distance}m</p>
+            </div>
+            <span class="pill accent">FR-02</span>
+          </div>
+          <div class="profile-row">
+            <div class="avatar">${owner.name[0]}</div>
+            <div>
+              <b>${owner.name}</b>
+              <div class="meta">평점 ${owner.rating} · 거래 ${owner.deals}건 · 신뢰 지수 ${owner.trust}</div>
+            </div>
+          </div>
+          <p class="meta" style="margin:14px 0">${item.description}</p>
+          <div class="metric-list">
+            <div class="metric"><span>대여 기간</span><b>2026-05-01 ~ 2026-05-03 (${days}일)</b></div>
+            <div class="metric"><span>대여료</span><b>${money(item.price * days)}</b></div>
+            <div class="metric"><span>보증금</span><b>${money(item.deposit)}</b></div>
+            <div class="metric"><span>신뢰 지수 할인</span><b>${discount ? "-" + money(discount) : "없음"}</b></div>
+            <div class="metric"><span>결제 예정액</span><b class="price">${money(payable)}</b></div>
+          </div>
+          <div class="grid cols-2" style="margin-top:14px">
+            <button class="btn secondary" data-action="nav" data-view="chat">채팅하기</button>
+            <button class="btn" data-action="reserve" data-id="${item.id}" ${user.verified ? "" : "disabled"}>예약 신청</button>
+          </div>
+        </section>
+      `;
+    }
+
+    function apiSnapshot() {
+      return `
+        <section class="panel">
+          <div class="panel-head">
+            <div><h3>명세 매핑</h3><p>현재 화면에서 호출되는 목업 API</p></div>
+          </div>
+          <div class="metric-list">
+            <div class="metric"><span>ITEM-01</span><b>GET /api/v1/items</b></div>
+            <div class="metric"><span>RENT-03</span><b>POST /api/v1/reservations</b></div>
+            <div class="metric"><span>AUTH-03</span><b>POST /api/v1/auth/mfa/verify</b></div>
+          </div>
+        </section>
+      `;
+    }
+
+    function registerView() {
+      const user = currentUser();
+      return `
+        <div class="layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>새 물품 등록</h2><p>ITEM-02 명세에 맞춰 최대 5장 사진, 가격, 보증금, 좌표 정보를 저장합니다.</p></div>
+              <span class="pill ${user.verified ? "good" : "warn"}">${user.verified ? "등록 가능" : "인증 필요"}</span>
+            </div>
+            <form id="itemForm" class="grid cols-2">
+              <div class="field"><label>물품명</label><input name="title" value="니콘 Z6 II 미러리스"></div>
+              <div class="field"><label>카테고리</label><select name="category"><option>카메라</option><option>게임기</option><option>캠핑</option><option>IT</option></select></div>
+              <div class="field"><label>하루 대여료</label><input name="price" type="number" value="45000"></div>
+              <div class="field"><label>보증금</label><input name="deposit" type="number" value="180000"></div>
+              <div class="field"><label>거래 위치</label><input name="location" value="강남구 삼성동"></div>
+              <div class="field"><label>거리(m)</label><input name="distance" type="number" value="960"></div>
+              <div class="field" style="grid-column:1/-1"><label>설명</label><textarea name="description">렌즈, 배터리, 스트랩 포함. 거래 전후 사진 기록을 필수로 진행합니다.</textarea></div>
+            </form>
+            <div class="photo-strip" style="margin:14px 0">
+              <div class="photo-slot filled">대표</div>
+              <div class="photo-slot filled">측면</div>
+              <div class="photo-slot">+</div>
+              <div class="photo-slot">+</div>
+              <div class="photo-slot">+</div>
+            </div>
+            <button class="btn" data-action="create-item" ${user.verified ? "" : "disabled"}>물품 등록</button>
+          </section>
+          <aside class="panel">
+            <div class="panel-head"><div><h3>내 물품</h3><p>FR-11 수정/삭제 대상</p></div></div>
+            <div class="grid">${state.items.filter((item) => item.ownerId === 1).map(ownerItemRow).join("")}</div>
+          </aside>
+        </div>
+      `;
+    }
+
+    function ownerItemRow(item) {
+      return `
+        <div class="card">
+          <div class="profile-row">
+            <div class="asset" style="width:72px;min-height:72px;background-image:url('${ASSETS[item.image]}')"></div>
+            <div style="min-width:0">
+              <b>${item.title}</b>
+              <div class="meta">${money(item.price)} /일 · 보증금 ${money(item.deposit)}</div>
+              <div class="pill-row" style="margin-top:6px">${statusPill(item.status === "AVAILABLE" ? "COMPLETED" : item.status)}<span class="pill">조회 ${80 + item.id % 20}</span></div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function reservationsView() {
+      return `
+        <div class="layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>예약 목록</h2><p>RENT-03 예약 생성 후 대여자 승인, 결제, 계약, 상태 인증으로 이어집니다.</p></div>
+            </div>
+            ${state.reservations.length ? `<div class="grid">${state.reservations.map(reservationCard).join("")}</div>` : `<div class="empty">아직 예약이 없습니다. 홈에서 물품을 선택해 예약을 신청할 수 있습니다.</div>`}
+          </section>
+          <aside>
+            ${contractPanel()}
+            ${timelinePanel()}
+          </aside>
+        </div>
+      `;
+    }
+
+    function reservationCard(reservation) {
+      const item = state.items.find((entry) => entry.id === reservation.itemId);
+      const contract = contractForReservation(reservation.id);
+      return `
+        <article class="card item-card">
+          <div class="asset" style="background-image:url('${ASSETS[item.image]}')"><span class="asset-tag">${reservation.startDate} ~ ${reservation.endDate}</span></div>
+          <div class="item-body">
+            <div class="panel-head" style="margin:0">
+              <div><h3>${item.title}</h3><p>${item.location} · ${money(reservation.totalAmount)}</p></div>
+              ${statusPill(contract ? contract.status : reservation.status)}
+            </div>
+            <div class="pill-row">
+              <span class="pill">예약 ID ${reservation.id}</span>
+              <span class="pill">차용자 ${currentUser().name}</span>
+              <span class="pill">대여자 ${ownerOf(item).name}</span>
+            </div>
+            <div class="pill-row">${reservationActions(reservation, contract)}</div>
+          </div>
+        </article>
+      `;
+    }
+
+    function reservationActions(reservation, contract) {
+      if (!contract) return `<button class="btn small" data-action="approve" data-id="${reservation.id}">예약 승인</button>`;
+      if (contract.status === "APPROVED") return `<button class="btn small" data-action="pay" data-id="${contract.id}">에스크로 결제</button>`;
+      if (contract.status === "PAID") return `<button class="btn small" data-action="sign" data-id="${contract.id}">전자 계약 서명</button>`;
+      if (contract.status === "SIGNED") return `<button class="btn small" data-action="nav" data-view="qr">상태 사진 등록</button>`;
+      if (contract.status === "READY" || contract.status === "RENTING") return `<button class="btn small" data-action="nav" data-view="qr">QR 인증</button><button class="btn secondary small" data-action="report" data-id="${contract.id}">분쟁 신고</button>`;
+      if (contract.status === "COMPLETED") return `<button class="btn small" data-action="review" data-id="${contract.id}">후기 작성</button>`;
+      if (contract.status === "DISPUTED") return `<button class="btn danger small" data-action="nav" data-view="admin">관리자 검토</button>`;
+      return "";
+    }
+
+    function contractPanel() {
+      const contract = latestContract();
+      if (!contract) {
+        return `<section class="panel"><div class="panel-head"><div><h3>전자 계약서</h3><p>예약 승인 후 생성됩니다.</p></div></div><div class="empty">생성된 계약서가 없습니다.</div></section>`;
+      }
+      const reservation = state.reservations.find((entry) => entry.id === contract.reservationId);
+      const item = state.items.find((entry) => entry.id === reservation.itemId);
+      return `
+        <section class="panel">
+          <div class="panel-head">
+            <div><h3>전자 계약서</h3><p>CONTRACT-${contract.id}-20260501</p></div>
+            ${statusPill(contract.status)}
+          </div>
+          <div class="metric-list">
+            <div class="metric"><span>물품</span><b>${item.title}</b></div>
+            <div class="metric"><span>기간</span><b>${reservation.startDate} ~ ${reservation.endDate}</b></div>
+            <div class="metric"><span>결제</span><b>${contract.paid ? money(reservation.totalAmount) : "대기"}</b></div>
+            <div class="metric"><span>상태 사진</span><b>전 ${contract.beforePhotos}/5 · 후 ${contract.afterPhotos}/5</b></div>
+            <div class="metric"><span>보증금</span><b>${contract.refunded ? "환급 완료" : contract.refundHeld ? "환급 보류" : "에스크로 보관"}</b></div>
+          </div>
+        </section>
+      `;
+    }
+
+    function timelinePanel() {
+      const contract = latestContract();
+      const status = contract ? contract.status : "PENDING";
+      const order = ["APPROVED", "PAID", "SIGNED", "READY", "RENTING", "COMPLETED"];
+      const current = order.indexOf(status);
+      const steps = [
+        ["예약 승인", "대여자가 예약 가능 여부와 중복 예약을 확인합니다."],
+        ["에스크로 결제", "대여료와 보증금을 원자적으로 결제 처리합니다."],
+        ["전자 계약", "물품 상태와 변상 책임을 서명된 계약서로 보관합니다."],
+        ["상태 사진", "대여 전 사진을 아카이브에 업로드합니다."],
+        ["QR 대여 인증", "대면 거래 시 START 토큰으로 대여중 상태가 됩니다."],
+        ["반납 및 환급", "END 토큰과 반납 사진 검수 후 보증금을 환급합니다."]
+      ];
+      return `
+        <section class="panel">
+          <div class="panel-head"><div><h3>거래 상태 흐름</h3><p>SDD 상태 관리 기준</p></div></div>
+          <div class="timeline">
+            ${steps.map((step, index) => `<div class="step ${index < current ? "done" : index === current ? "active" : ""}"><div class="dot">${index < current ? "✓" : index + 1}</div><div><b>${step[0]}</b><span>${step[1]}</span></div></div>`).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    function chatView() {
+      const chat = state.chats.find((entry) => entry.id === state.selectedChatId) || state.chats[0];
+      const item = state.items.find((entry) => entry.id === chat.itemId);
+      return `
+        <section class="panel">
+          <div class="chat-shell">
+            <div>
+              <div class="panel-head"><div><h2>대화 목록</h2><p>물품과 당사자 기준으로 채팅방을 생성합니다.</p></div></div>
+              <div class="chat-list">${state.chats.map(chatListItem).join("")}</div>
+            </div>
+            <div>
+              <div class="panel-head">
+                <div><h2>${item.title}</h2><p>예약 조건, 장소, 시간을 조율합니다.</p></div>
+                <button class="btn small" data-action="select-item-reserve" data-id="${item.id}">예약 신청</button>
+              </div>
+              <div class="messages">${chat.messages.map(messageBubble).join("")}</div>
+              <div class="grid" style="grid-template-columns:minmax(0,1fr) auto;margin-top:10px">
+                <input id="messageInput" placeholder="메시지를 입력하세요" style="min-height:40px;padding:0 12px;border:1px solid var(--line);border-radius:8px">
+                <button class="btn" data-action="send-message">전송</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    function chatListItem(chat) {
+      const item = state.items.find((entry) => entry.id === chat.itemId);
+      const last = chat.messages[chat.messages.length - 1];
+      return `<button class="chat-item ${state.selectedChatId === chat.id ? "active" : ""}" data-action="select-chat" data-id="${chat.id}"><b>${item.title}</b><div class="meta">${last.text}</div></button>`;
+    }
+
+    function messageBubble(message) {
+      const mine = message.from === state.currentUserId;
+      const sender = state.users.find((user) => user.id === message.from);
+      return `<div class="bubble ${mine ? "me" : ""}">${mine ? "" : `<b>${sender.name}</b><br>`}${message.text}</div>`;
+    }
+
+    function qrView() {
+      const contract = latestContract();
+      if (!contract) {
+        return `<section class="panel"><div class="empty">진행 중인 계약이 없습니다. 예약 승인 후 QR 인증을 사용할 수 있습니다.</div></section>`;
+      }
+      const reservation = state.reservations.find((entry) => entry.id === contract.reservationId);
+      const item = state.items.find((entry) => entry.id === reservation.itemId);
+      const canBefore = contract.status === "SIGNED";
+      const canStart = contract.status === "READY" && contract.beforePhotos > 0;
+      const canAfter = contract.status === "RENTING";
+      const canEnd = contract.status === "RENTING" && contract.afterPhotos > 0;
+      return `
+        <div class="layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>${item.title}</h2><p>RENT-04 사진 업로드가 완료되어야 RENT-02 START 인증이 가능합니다.</p></div>
+              ${statusPill(contract.status)}
+            </div>
+            <div class="photo-strip">
+              ${Array.from({ length: 5 }).map((_, index) => `<div class="photo-slot ${index < contract.beforePhotos ? "filled" : ""}">${index < contract.beforePhotos ? "Before" : "전 사진"}</div>`).join("")}
+            </div>
+            <div style="height:12px"></div>
+            <div class="photo-strip">
+              ${Array.from({ length: 5 }).map((_, index) => `<div class="photo-slot ${index < contract.afterPhotos ? "filled" : ""}">${index < contract.afterPhotos ? "After" : "후 사진"}</div>`).join("")}
+            </div>
+            <div class="grid cols-2" style="margin-top:14px">
+              <button class="btn secondary" data-action="upload-before" data-id="${contract.id}" ${canBefore ? "" : "disabled"}>대여 전 사진 업로드</button>
+              <button class="btn secondary" data-action="upload-after" data-id="${contract.id}" ${canAfter ? "" : "disabled"}>반납 후 사진 업로드</button>
+            </div>
+          </section>
+          <aside class="panel">
+            <div class="panel-head"><div><h3>QR 인증</h3><p>QR-SG-${contract.id}-${contract.status}</p></div></div>
+            <div class="qr">${Array.from({ length: 49 }).map((_, index) => `<span class="${[3, 5, 10, 17, 23, 28, 31, 39, 45].includes(index) ? "empty" : ""}"></span>`).join("")}</div>
+            <div class="grid cols-2">
+              <button class="btn" data-action="verify-start" data-id="${contract.id}" ${canStart ? "" : "disabled"}>START 인증</button>
+              <button class="btn good" data-action="verify-end" data-id="${contract.id}" ${canEnd ? "" : "disabled"}>END 인증</button>
+            </div>
+          </aside>
+        </div>
+      `;
+    }
+
+    function profileView() {
+      const user = currentUser();
+      const myReviews = state.reviews.filter((review) => review.toUserId === user.id);
+      return `
+        <div class="layout">
+          <section class="panel">
+            <div class="profile-row">
+              <div class="avatar" style="width:68px;height:68px;flex-basis:68px;font-size:26px">${user.name[0]}</div>
+              <div style="flex:1">
+                <h2 style="margin:0">${user.name}</h2>
+                <div class="meta">${user.role} · ${user.verified ? "본인 인증 완료" : "본인 인증 미완료"}</div>
+                <div class="progress" style="margin-top:10px"><span style="width:${Math.min(100, user.trust / 10)}%"></span></div>
+              </div>
+              <span class="pill primary">${user.trust} / 1000</span>
+            </div>
+            <div class="grid cols-2" style="margin-top:18px">
+              <div class="card"><div class="metric"><span>거래 이력</span><b>${user.deals}건</b></div></div>
+              <div class="card"><div class="metric"><span>평균 평점</span><b>${user.rating}</b></div></div>
+              <div class="card"><div class="metric"><span>본인 인증</span><b>${user.verified ? "완료" : "대기"}</b></div></div>
+              <div class="card"><div class="metric"><span>무사고 기록</span><b>${user.noAccidentDays}일</b></div></div>
+            </div>
+          </section>
+          <aside class="panel">
+            <div class="panel-head"><div><h3>후기</h3><p>FR-13 결과가 신뢰 지수에 반영됩니다.</p></div></div>
+            <div class="grid">${myReviews.length ? myReviews.map((review) => `<div class="card"><b>${"★".repeat(review.rating)}</b><p class="meta">${review.text}</p><span class="pill">${review.from}</span></div>`).join("") : `<div class="empty">아직 받은 후기가 없습니다.</div>`}</div>
+          </aside>
+        </div>
+      `;
+    }
+
+    function adminView() {
+      return `
+        <div class="layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>신고 및 분쟁 큐</h2><p>파손, 미반납, 도난, 허위 등록 신고를 검토합니다.</p></div>
+              <span class="pill danger">${state.reports.length}건</span>
+            </div>
+            ${state.reports.length ? `<table class="table"><thead><tr><th>번호</th><th>유형</th><th>상태</th><th>처리</th></tr></thead><tbody>${state.reports.map(reportRow).join("")}</tbody></table>` : `<div class="empty">접수된 신고가 없습니다.</div>`}
+          </section>
+          <aside class="panel">
+            <div class="panel-head"><div><h3>운영 지표</h3><p>환급 보류와 제재 대기 상태</p></div></div>
+            <div class="grid cols-2">
+              <div class="card"><b>${state.reports.filter((report) => report.status === "OPEN").length}</b><div class="meta">검토중</div></div>
+              <div class="card"><b>${state.contracts.filter((contract) => contract.refundHeld).length}</b><div class="meta">환급 보류</div></div>
+              <div class="card"><b>${state.contracts.filter((contract) => contract.status === "COMPLETED").length}</b><div class="meta">완료 거래</div></div>
+              <div class="card"><b>${state.items.length}</b><div class="meta">등록 물품</div></div>
+            </div>
+          </aside>
+        </div>
+      `;
+    }
+
+    function reportRow(report) {
+      const contract = state.contracts.find((entry) => entry.id === report.contractId);
+      return `
+        <tr>
+          <td>DIS-${report.id}</td>
+          <td>${report.type}<div class="meta">${report.reason}</div></td>
+          <td>${contract ? statusPill(contract.status) : ""}</td>
+          <td>
+            <button class="btn good small" data-action="admin-resolve" data-id="${report.id}">일부 차감 후 종결</button>
+          </td>
+        </tr>
+      `;
+    }
+
+    function bindEvents() {
+      root.querySelectorAll("[data-action]").forEach((button) => {
+        button.addEventListener("click", handleAction);
+      });
+      const search = root.querySelector("#searchInput");
+      if (search) {
+        search.addEventListener("input", (event) => {
+          state.query = event.target.value;
+          saveState();
+          render();
+        });
+      }
+      const sort = root.querySelector("#sortSelect");
+      if (sort) {
+        sort.addEventListener("change", (event) => {
+          state.sort = event.target.value;
+          saveState();
+          render();
+        });
+      }
+    }
+
+    function handleAction(event) {
+      const action = event.currentTarget.dataset.action;
+      const id = Number(event.currentTarget.dataset.id);
+      if (action === "nav") state.view = event.currentTarget.dataset.view;
+      if (action === "reset") state = structuredClone(initialState);
+      if (action === "verify") currentUser().verified = true;
+      if (action === "unverify") currentUser().verified = false;
+      if (action === "category") state.category = event.currentTarget.dataset.category;
+      if (action === "select-item") state.selectedItemId = id;
+      if (action === "select-item-reserve") {
+        state.selectedItemId = id;
+        state.view = "home";
+      }
+      if (action === "reserve") createReservation(id);
+      if (action === "create-item") createItem();
+      if (action === "approve") approveReservation(id);
+      if (action === "pay") payContract(id);
+      if (action === "sign") signContract(id);
+      if (action === "upload-before") uploadBefore(id);
+      if (action === "upload-after") uploadAfter(id);
+      if (action === "verify-start") verifyStart(id);
+      if (action === "verify-end") verifyEnd(id);
+      if (action === "review") createReview(id);
+      if (action === "report") createReport(id);
+      if (action === "admin-resolve") resolveReport(id);
+      if (action === "select-chat") state.selectedChatId = id;
+      if (action === "send-message") sendMessage();
+      saveState();
+      render();
+    }
+
+    function createReservation(itemId) {
+      if (!currentUser().verified) return;
+      const item = state.items.find((entry) => entry.id === itemId);
+      const days = dateDays("2026-05-01", "2026-05-03");
+      const discount = currentUser().trust >= 850 ? Math.round(item.deposit * 0.1) : 0;
+      const reservation = {
+        id: nextId(state.reservations),
+        itemId,
+        borrowerId: state.currentUserId,
+        startDate: "2026-05-01",
+        endDate: "2026-05-03",
+        status: "PENDING",
+        totalAmount: item.price * days + item.deposit - discount
+      };
+      state.reservations.push(reservation);
+      state.view = "reservations";
+    }
+
+    function createItem() {
+      if (!currentUser().verified) return;
+      const form = root.querySelector("#itemForm");
+      if (!form) return;
+      const data = new FormData(form);
+      state.items.unshift({
+        id: nextId(state.items),
+        title: data.get("title"),
+        category: data.get("category"),
+        description: data.get("description"),
+        price: Number(data.get("price")),
+        deposit: Number(data.get("deposit")),
+        distance: Number(data.get("distance")),
+        location: data.get("location"),
+        ownerId: 1,
+        status: "AVAILABLE",
+        image: "camera"
+      });
+      state.view = "home";
+    }
+
+    function approveReservation(id) {
+      const reservation = state.reservations.find((entry) => entry.id === id);
+      if (!reservation) return;
+      reservation.status = "APPROVED";
+      state.contracts.push({
+        id: nextId(state.contracts),
+        reservationId: id,
+        status: "APPROVED",
+        paid: false,
+        signed: false,
+        beforePhotos: 0,
+        afterPhotos: 0,
+        refunded: false,
+        refundHeld: false
+      });
+    }
+
+    function payContract(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract || !currentUser().verified) return;
+      contract.status = "PAID";
+      contract.paid = true;
+    }
+
+    function signContract(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract) return;
+      contract.status = "SIGNED";
+      contract.signed = true;
+      state.view = "qr";
+    }
+
+    function uploadBefore(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract || contract.status !== "SIGNED") return;
+      contract.beforePhotos = 5;
+      contract.status = "READY";
+    }
+
+    function uploadAfter(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract || contract.status !== "RENTING") return;
+      contract.afterPhotos = 5;
+    }
+
+    function verifyStart(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract || contract.status !== "READY" || contract.beforePhotos === 0) return;
+      contract.status = "RENTING";
+    }
+
+    function verifyEnd(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract || contract.status !== "RENTING" || contract.afterPhotos === 0) return;
+      contract.status = "COMPLETED";
+      contract.refunded = true;
+      const user = currentUser();
+      user.deals += 1;
+      user.trust = Math.min(1000, user.trust + 12);
+      state.view = "reservations";
+    }
+
+    function createReview(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract) return;
+      const reservation = state.reservations.find((entry) => entry.id === contract.reservationId);
+      const item = state.items.find((entry) => entry.id === reservation.itemId);
+      state.reviews.push({
+        id: nextId(state.reviews),
+        contractId: id,
+        from: currentUser().name,
+        toUserId: item.ownerId,
+        rating: 5,
+        text: "물품 상태와 약속 시간이 모두 정확했습니다."
+      });
+      state.view = "profile";
+    }
+
+    function createReport(id) {
+      const contract = state.contracts.find((entry) => entry.id === id);
+      if (!contract) return;
+      contract.status = "DISPUTED";
+      contract.refundHeld = true;
+      state.reports.push({
+        id: nextId(state.reports),
+        contractId: id,
+        type: "파손 의심",
+        reason: "반납 후 사진에서 렌즈 가장자리 스크래치가 확인됨",
+        status: "OPEN"
+      });
+      state.view = "admin";
+    }
+
+    function resolveReport(id) {
+      const report = state.reports.find((entry) => entry.id === id);
+      if (!report) return;
+      const contract = state.contracts.find((entry) => entry.id === report.contractId);
+      if (!contract) return;
+      report.status = "CLOSED";
+      contract.status = "COMPLETED";
+      contract.refundHeld = false;
+      contract.refunded = true;
+    }
+
+    function sendMessage() {
+      const input = root.querySelector("#messageInput");
+      const chat = state.chats.find((entry) => entry.id === state.selectedChatId);
+      if (!input || !chat || !input.value.trim()) return;
+      chat.messages.push({ from: state.currentUserId, text: input.value.trim() });
+    }
+
+    render();
+  </script>
+</body>
+</html>

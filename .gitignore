@@ -1,0 +1,17 @@
+# Android/Gradle build output
+ShareGuardAndroid/.gradle/
+ShareGuardAndroid/build/
+ShareGuardAndroid/app/build/
+**/build/
+
+# Machine-specific Android Studio settings
+ShareGuardAndroid/.idea/
+*.iml
+
+# Local SDK path and Supabase credentials
+ShareGuardAndroid/local.properties
+
+# Generated packages and logs
+*.apk
+*.aab
+*.log

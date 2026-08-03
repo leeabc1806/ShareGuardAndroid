@@ -1,0 +1,3 @@
+# Keep the existing sdk.dir line in local.properties and add these values.
+SUPABASE_URL=https://tqfcukcfiaywxibpcvzw.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_nbmpT2BjQLjPkYzqvFaXoQ_TySJj02S
