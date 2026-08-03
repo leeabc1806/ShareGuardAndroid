@@ -4,6 +4,20 @@
 
 Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 추가했습니다. Kotlin + Android 기본 View로 구현되어 외부 UI 라이브러리 없이 빌드됩니다. Supabase 설정을 추가하면 이메일 로그인과 PostgreSQL 물품 조회/등록이 실제 서버와 연동됩니다.
 
+## 팀원 빠른 시작
+
+처음 참여하는 팀원은 [팀 협업 가이드](./CONTRIBUTING.md)를 순서대로 따라 하면 됩니다. GitHub 초대 승인, 프로젝트 복제, Android Studio 실행, Supabase 연결, 브랜치 생성과 Pull Request 방법까지 설명되어 있습니다.
+
+저장소를 복제한 뒤 Android Studio에서는 저장소 루트가 아니라 내부의 `ShareGuardAndroid` 폴더를 엽니다.
+
+```text
+복제한 폴더/
+├─ README.md
+├─ CONTRIBUTING.md
+├─ index.html
+└─ ShareGuardAndroid/    <- Android Studio에서 이 폴더 열기
+```
+
 ## 구현 범위
 
 - `AUTH-03`: 본인 인증 완료/해제 상태와 미인증 사용자 거래 차단
@@ -47,3 +61,5 @@ Android Studio에서는 `ShareGuardAndroid` 폴더를 열고 `app` 구성을 실
 ## Supabase 데이터베이스 연결
 
 DB 스키마와 설정 순서는 [ShareGuardAndroid/database/README.md](./ShareGuardAndroid/database/README.md)에 있습니다. Supabase 프로젝트를 만들고 [schema.sql](./ShareGuardAndroid/database/schema.sql)을 실행한 뒤 `ShareGuardAndroid/local.properties`에 Project URL과 Publishable key를 추가하면 됩니다.
+
+현재 Supabase 프로젝트를 함께 사용하는 팀원은 스키마를 다시 실행하지 않아도 됩니다. 각자 `local.properties`만 설정하면 됩니다.
