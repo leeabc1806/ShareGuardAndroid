@@ -1,5 +1,6 @@
 package com.shareguard.app.data
 
+import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -7,11 +8,25 @@ import java.net.URL
 
 data class AuthResult(
     val accessToken: String? = null,
+    val refreshToken: String? = null,
     val userId: String? = null,
+    val email: String? = null,
     val message: String
 ) {
     val isSignedIn: Boolean get() = !accessToken.isNullOrBlank()
 }
+
+data class ProfileResult(
+    val userId: String,
+    val email: String,
+    val displayName: String,
+    val verified: Boolean
+)
+
+data class PassVerificationResult(
+    val verified: Boolean,
+    val message: String
+)
 
 data class RemoteItem(
     val id: String,
@@ -52,6 +67,71 @@ class SupabaseRestClient(
             .put("password", password)
             .put("data", JSONObject().put("display_name", displayName.trim()))
         return parseAuth(request("/auth/v1/signup", "POST", body))
+    }
+
+    fun googleSignInUrl(redirectUri: String, codeChallenge: String): String =
+        Uri.parse(baseUrl.trimEnd('/') + "/auth/v1/authorize")
+            .buildUpon()
+            .appendQueryParameter("provider", "google")
+            .appendQueryParameter("redirect_to", redirectUri)
+            .appendQueryParameter("code_challenge", codeChallenge)
+            .appendQueryParameter("code_challenge_method", "s256")
+            .build()
+            .toString()
+
+    fun exchangeCodeForSession(authCode: String, codeVerifier: String): AuthResult {
+        val body = JSONObject()
+            .put("auth_code", authCode)
+            .put("code_verifier", codeVerifier)
+        return parseAuth(request("/auth/v1/token?grant_type=pkce", "POST", body))
+    }
+
+    fun refreshSession(refreshToken: String): AuthResult {
+        val body = JSONObject().put("refresh_token", refreshToken)
+        return parseAuth(request("/auth/v1/token?grant_type=refresh_token", "POST", body))
+    }
+
+    fun fetchProfile(accessToken: String): ProfileResult {
+        val userResponse = request("/auth/v1/user", "GET", accessToken = accessToken)
+        if (!userResponse.isSuccessful) throw IllegalStateException(userResponse.errorMessage())
+        val user = JSONObject(userResponse.body)
+        val userId = user.getString("id")
+        val email = user.optString("email", "")
+
+        val profileResponse = request(
+            "/rest/v1/profiles?select=id,display_name,verified&id=eq.$userId&limit=1",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!profileResponse.isSuccessful) throw IllegalStateException(profileResponse.errorMessage())
+        val rows = JSONArray(profileResponse.body)
+        val row = rows.optJSONObject(0)
+        return ProfileResult(
+            userId = userId,
+            email = email,
+            displayName = row?.optString("display_name")?.ifBlank { null }
+                ?: email.substringBefore('@').ifBlank { "ShareGuard 사용자" },
+            verified = row?.optBoolean("verified", false) ?: false
+        )
+    }
+
+    fun verifyPass(
+        identityVerificationId: String,
+        accessToken: String,
+        functionName: String
+    ): PassVerificationResult {
+        val response = request(
+            "/functions/v1/$functionName",
+            "POST",
+            JSONObject().put("identityVerificationId", identityVerificationId),
+            accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val json = JSONObject(response.body)
+        return PassVerificationResult(
+            verified = json.optBoolean("verified", false),
+            message = json.optString("message", "PASS 본인인증 결과를 확인했습니다.")
+        )
     }
 
     fun signOut(accessToken: String) {
@@ -114,13 +194,16 @@ class SupabaseRestClient(
         if (!response.isSuccessful) return AuthResult(message = response.errorMessage())
         val json = JSONObject(response.body)
         val token = json.optString("access_token").ifBlank { null }
-        val userId = json.optJSONObject("user")?.optString("id")?.ifBlank { null }
+        val refreshToken = json.optString("refresh_token").ifBlank { null }
+        val user = json.optJSONObject("user")
+        val userId = user?.optString("id")?.ifBlank { null }
+        val email = user?.optString("email")?.ifBlank { null }
         val message = if (token == null) {
             "가입 확인 메일을 확인한 뒤 로그인하세요."
         } else {
-            "Supabase 로그인 완료"
+            "로그인되었습니다. 거래 전 PASS 본인인증을 완료하세요."
         }
-        return AuthResult(token, userId, message)
+        return AuthResult(token, refreshToken, userId, email, message)
     }
 
     private fun request(
@@ -167,6 +250,7 @@ class SupabaseRestClient(
                 json.optString("msg")
                     .ifBlank { json.optString("message") }
                     .ifBlank { json.optString("error_description") }
+                    .ifBlank { json.optString("error") }
                     .ifBlank { body }
             }.getOrDefault(body)
         }

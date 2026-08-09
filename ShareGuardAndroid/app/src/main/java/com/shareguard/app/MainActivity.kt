@@ -1,11 +1,13 @@
 package com.shareguard.app
 
-import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -16,14 +18,32 @@ import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import com.shareguard.app.data.AuthResult
 import com.shareguard.app.data.NewRemoteItem
+import com.shareguard.app.data.ProfileResult
 import com.shareguard.app.data.RemoteItem
 import com.shareguard.app.data.SupabaseRestClient
+import io.portone.sdk.android.PortOne
+import io.portone.sdk.android.identityverification.IdentityVerificationCallback
+import io.portone.sdk.android.type.request.IdentityVerificationRequest
+import io.portone.sdk.android.type.response.IdentityVerificationResponse
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.text.NumberFormat
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
+    companion object {
+        private const val OAUTH_REDIRECT_URI = "shareguard://auth/callback"
+        private const val SESSION_PREFERENCES = "shareguard_session"
+        private const val OAUTH_CODE_VERIFIER = "oauth_code_verifier"
+        private const val match = ViewGroup.LayoutParams.MATCH_PARENT
+        private const val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+    }
+
     private enum class Screen(val title: String, val subtitle: String) {
         HOME("위치 기반 물품 탐색", "주변 물품을 거리, 가격, 신뢰도 기준으로 확인합니다."),
         REGISTER("물품 등록", "사진, 가격, 보증금, 거래 위치를 입력해 물품을 등록합니다."),
@@ -115,6 +135,24 @@ class MainActivity : Activity() {
     private lateinit var bottomNav: LinearLayout
     private lateinit var supabase: SupabaseRestClient
     private var sessionToken: String? = null
+    private var sessionRefreshToken: String? = null
+    private var authenticatedUserId: String? = null
+    private var authenticatedEmail: String? = null
+    private var authenticatedDisplayName: String? = null
+
+    private val identityVerificationLauncher =
+        PortOne.registerForIdentityVerificationActivity(
+            this,
+            callback = object : IdentityVerificationCallback {
+                override fun onSuccess(response: IdentityVerificationResponse) {
+                    verifyPassOnServer(response.identityVerificationId)
+                }
+
+                override fun onFail(response: IdentityVerificationResponse) {
+                    toast(response.message ?: response.pgMessage ?: "PASS 본인인증이 취소되었거나 실패했습니다.")
+                }
+            }
+        )
 
     private val users = mutableListOf(
         User(1, "김민수", "대여자", true, 850, 4.9, 28, 120),
@@ -137,14 +175,27 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         supabase = SupabaseRestClient(BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_PUBLISHABLE_KEY)
-        sessionToken = getSharedPreferences("shareguard_session", MODE_PRIVATE)
-            .getString("access_token", null)
+        val preferences = getSharedPreferences(SESSION_PREFERENCES, MODE_PRIVATE)
+        sessionToken = preferences.getString("access_token", null)
+        sessionRefreshToken = preferences.getString("refresh_token", null)
+        authenticatedUserId = preferences.getString("user_id", null)
+        authenticatedEmail = preferences.getString("email", null)
+        authenticatedDisplayName = preferences.getString("display_name", null)
         if (supabase.isConfigured) {
-            currentUser().verified = !sessionToken.isNullOrBlank()
+            currentUser().verified = false
         }
         buildShell()
         render()
+        if (!handleGoogleAuthCallback(intent)) {
+            restoreSession()
+        }
         loadRemoteItems()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleGoogleAuthCallback(intent)
     }
 
     private fun buildShell() {
@@ -209,12 +260,31 @@ class MainActivity : Activity() {
         val user = currentUser()
         if (supabase.isConfigured) {
             val signedIn = !sessionToken.isNullOrBlank()
-            val box = card(if (signedIn) Color.rgb(234, 248, 239) else Color.rgb(255, 245, 221))
-            box.addView(textView(if (signedIn) "Supabase 로그인 완료" else "Supabase 로그인 필요", 14, true, if (signedIn) good else warn))
-            box.addView(textView(if (signedIn) "등록한 물품은 PostgreSQL 데이터베이스에 저장됩니다." else "이메일 계정으로 로그인하면 물품 등록과 거래 기능이 활성화됩니다.", 13, false, muted).withTop(2))
+            val fullyVerified = signedIn && user.verified
+            val box = card(if (fullyVerified) Color.rgb(234, 248, 239) else Color.rgb(255, 245, 221))
+            val title = when {
+                fullyVerified -> "로그인 및 PASS 본인인증 완료"
+                signedIn -> "로그인 완료 · PASS 본인인증 필요"
+                else -> "로그인 필요"
+            }
+            box.addView(textView(title, 14, true, if (fullyVerified) good else warn))
             if (signedIn) {
+                val account = authenticatedEmail ?: authenticatedDisplayName ?: "ShareGuard 사용자"
+                box.addView(textView("계정: $account", 13, false, muted).withTop(2))
+                box.addView(textView(
+                    if (fullyVerified) "거래와 물품 등록 기능을 사용할 수 있습니다."
+                    else "거래와 물품 등록 전에 PASS 앱 본인인증을 완료하세요.",
+                    13,
+                    false,
+                    muted
+                ).withTop(2))
+                if (!fullyVerified) {
+                    box.addView(button("PASS 앱으로 본인인증") { startPassVerification() }.withTop(10))
+                }
                 box.addView(button("로그아웃", secondary = true) { signOut() }.withTop(10))
             } else {
+                box.addView(textView("Google 계정 또는 이메일로 가입하고 로그인할 수 있습니다.", 13, false, muted).withTop(2))
+                val displayName = edit("홍길동")
                 val email = edit("shareguard@example.com").apply {
                     inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 }
@@ -222,16 +292,20 @@ class MainActivity : Activity() {
                     hint = "8자 이상 비밀번호"
                     inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                 }
+                box.addView(field("이름", displayName))
                 box.addView(field("이메일", email))
                 box.addView(field("비밀번호", password))
                 box.addView(row {
                     addView(button("로그인") {
-                        authenticate(email.text.toString(), password.text.toString(), false)
+                        authenticate(email.text.toString(), password.text.toString(), displayName.text.toString(), false)
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
                     addView(space(8))
                     addView(button("회원가입", secondary = true) {
-                        authenticate(email.text.toString(), password.text.toString(), true)
+                        authenticate(email.text.toString(), password.text.toString(), displayName.text.toString(), true)
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
+                }.withTop(10))
+                box.addView(button("Google 계정으로 로그인", secondary = true) {
+                    startGoogleSignIn()
                 }.withTop(10))
             }
             content.addView(box.withTop(14))
@@ -545,29 +619,30 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun authenticate(email: String, password: String, createAccount: Boolean) {
+    private fun authenticate(email: String, password: String, displayName: String, createAccount: Boolean) {
         if (!email.contains('@') || password.length < 8) {
             toast("이메일과 8자 이상 비밀번호를 입력하세요.")
+            return
+        }
+        if (createAccount && displayName.trim().length !in 2..30) {
+            toast("회원가입 이름은 2~30자로 입력하세요.")
             return
         }
         toast(if (createAccount) "회원가입 중입니다." else "로그인 중입니다.")
         Thread {
             val result = runCatching {
-                if (createAccount) {
-                    supabase.signUp(email, password, currentUser().name)
+                val auth = if (createAccount) {
+                    supabase.signUp(email, password, displayName)
                 } else {
                     supabase.signIn(email, password)
                 }
+                val profile = auth.accessToken?.let(supabase::fetchProfile)
+                auth to profile
             }
             runOnUiThread {
-                result.onSuccess { auth ->
+                result.onSuccess { (auth, profile) ->
                     if (auth.isSignedIn) {
-                        sessionToken = auth.accessToken
-                        getSharedPreferences("shareguard_session", MODE_PRIVATE)
-                            .edit()
-                            .putString("access_token", auth.accessToken)
-                            .apply()
-                        currentUser().verified = true
+                        applySession(auth, profile)
                         loadRemoteItems()
                     }
                     toast(auth.message)
@@ -579,15 +654,186 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun startGoogleSignIn() {
+        val verifierBytes = ByteArray(32).also(SecureRandom()::nextBytes)
+        val verifier = Base64.encodeToString(
+            verifierBytes,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        val challenge = Base64.encodeToString(
+            MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        getSharedPreferences(SESSION_PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putString(OAUTH_CODE_VERIFIER, verifier)
+            .apply()
+        val url = supabase.googleSignInUrl(OAUTH_REDIRECT_URI, challenge)
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }
+
+    private fun handleGoogleAuthCallback(callbackIntent: Intent?): Boolean {
+        val uri = callbackIntent?.data ?: return false
+        if (uri.scheme != "shareguard" || uri.host != "auth" || uri.path != "/callback") return false
+
+        val error = uri.getQueryParameter("error_description") ?: uri.getQueryParameter("error")
+        if (!error.isNullOrBlank()) {
+            toast("Google 로그인 실패: $error")
+            return true
+        }
+        val code = uri.getQueryParameter("code")
+        val preferences = getSharedPreferences(SESSION_PREFERENCES, MODE_PRIVATE)
+        val verifier = preferences.getString(OAUTH_CODE_VERIFIER, null)
+        preferences.edit().remove(OAUTH_CODE_VERIFIER).apply()
+        if (code.isNullOrBlank() || verifier.isNullOrBlank()) {
+            toast("Google 로그인 정보를 확인할 수 없습니다. 다시 시도하세요.")
+            return true
+        }
+
+        toast("Google 로그인 확인 중입니다.")
+        Thread {
+            val result = runCatching {
+                val auth = supabase.exchangeCodeForSession(code, verifier)
+                val profile = auth.accessToken?.let(supabase::fetchProfile)
+                auth to profile
+            }
+            runOnUiThread {
+                result.onSuccess { (auth, profile) ->
+                    if (auth.isSignedIn) {
+                        applySession(auth, profile)
+                        loadRemoteItems()
+                    }
+                    toast(auth.message)
+                    render()
+                }.onFailure { errorResult ->
+                    toast(errorResult.message ?: "Google 로그인에 실패했습니다.")
+                }
+            }
+        }.start()
+        return true
+    }
+
+    private fun restoreSession() {
+        val storedAccessToken = sessionToken
+        val storedRefreshToken = sessionRefreshToken
+        if (storedAccessToken.isNullOrBlank() && storedRefreshToken.isNullOrBlank()) return
+
+        Thread {
+            val result = runCatching {
+                val refreshed = storedRefreshToken?.let(supabase::refreshSession)
+                val auth = if (refreshed?.isSignedIn == true) {
+                    refreshed
+                } else {
+                    AuthResult(
+                        accessToken = storedAccessToken,
+                        refreshToken = storedRefreshToken,
+                        userId = authenticatedUserId,
+                        email = authenticatedEmail,
+                        message = "세션 복원 완료"
+                    )
+                }
+                val token = auth.accessToken ?: error("저장된 로그인 세션이 없습니다.")
+                auth to supabase.fetchProfile(token)
+            }
+            runOnUiThread {
+                result.onSuccess { (auth, profile) ->
+                    applySession(auth, profile)
+                    render()
+                    loadRemoteItems()
+                }.onFailure {
+                    clearLocalSession()
+                    render()
+                    toast("로그인 세션이 만료되었습니다. 다시 로그인하세요.")
+                }
+            }
+        }.start()
+    }
+
+    private fun applySession(auth: AuthResult, profile: ProfileResult?) {
+        sessionToken = auth.accessToken
+        sessionRefreshToken = auth.refreshToken ?: sessionRefreshToken
+        authenticatedUserId = profile?.userId ?: auth.userId
+        authenticatedEmail = profile?.email ?: auth.email
+        authenticatedDisplayName = profile?.displayName
+        currentUser().verified = profile?.verified ?: false
+        getSharedPreferences(SESSION_PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putString("access_token", sessionToken)
+            .putString("refresh_token", sessionRefreshToken)
+            .putString("user_id", authenticatedUserId)
+            .putString("email", authenticatedEmail)
+            .putString("display_name", authenticatedDisplayName)
+            .apply()
+    }
+
+    private fun startPassVerification() {
+        val userId = authenticatedUserId
+        if (sessionToken.isNullOrBlank() || userId.isNullOrBlank()) {
+            toast("먼저 로그인하세요.")
+            return
+        }
+        if (BuildConfig.PORTONE_STORE_ID.isBlank() || BuildConfig.PORTONE_CHANNEL_KEY.isBlank()) {
+            toast("PortOne Store ID와 PASS 채널 키를 local.properties에 설정하세요.")
+            return
+        }
+        val identityVerificationId = "shareguard-$userId-${UUID.randomUUID()}"
+        runCatching {
+            PortOne.requestIdentityVerification(
+                this,
+                request = IdentityVerificationRequest(
+                    storeId = BuildConfig.PORTONE_STORE_ID,
+                    identityVerificationId = identityVerificationId,
+                    channelKey = BuildConfig.PORTONE_CHANNEL_KEY
+                ),
+                resultLauncher = identityVerificationLauncher
+            )
+        }.onFailure { error ->
+            toast(error.message ?: "PASS 본인인증 화면을 열지 못했습니다.")
+        }
+    }
+
+    private fun verifyPassOnServer(identityVerificationId: String) {
+        val token = sessionToken ?: return
+        toast("PASS 인증 결과를 서버에서 확인 중입니다.")
+        Thread {
+            val result = runCatching {
+                val verification = supabase.verifyPass(
+                    identityVerificationId,
+                    token,
+                    BuildConfig.PASS_VERIFY_FUNCTION
+                )
+                val profile = if (verification.verified) supabase.fetchProfile(token) else null
+                verification to profile
+            }
+            runOnUiThread {
+                result.onSuccess { (verification, profile) ->
+                    currentUser().verified = profile?.verified == true
+                    toast(verification.message)
+                    render()
+                }.onFailure { error ->
+                    toast(error.message ?: "PASS 인증 결과 확인에 실패했습니다.")
+                }
+            }
+        }.start()
+    }
+
     private fun signOut() {
         val token = sessionToken
-        sessionToken = null
-        currentUser().verified = false
-        getSharedPreferences("shareguard_session", MODE_PRIVATE).edit().clear().apply()
+        clearLocalSession()
         render()
         if (token != null) {
             Thread { runCatching { supabase.signOut(token) } }.start()
         }
+    }
+
+    private fun clearLocalSession() {
+        sessionToken = null
+        sessionRefreshToken = null
+        authenticatedUserId = null
+        authenticatedEmail = null
+        authenticatedDisplayName = null
+        currentUser().verified = false
+        getSharedPreferences(SESSION_PREFERENCES, MODE_PRIVATE).edit().clear().apply()
     }
 
     private fun loadRemoteItems() {
@@ -931,8 +1177,4 @@ class MainActivity : Activity() {
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 
-    private companion object {
-        const val match = ViewGroup.LayoutParams.MATCH_PARENT
-        const val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
-    }
 }

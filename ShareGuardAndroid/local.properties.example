@@ -1,3 +1,6 @@
 # Keep the existing sdk.dir line in local.properties and add these values.
+# PORTONE_STORE_ID and PORTONE_CHANNEL_KEY are public integration identifiers.
+PORTONE_STORE_ID=
+PORTONE_CHANNEL_KEY=
 SUPABASE_URL=https://tqfcukcfiaywxibpcvzw.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_nbmpT2BjQLjPkYzqvFaXoQ_TySJj02S
