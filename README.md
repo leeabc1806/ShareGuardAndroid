@@ -4,6 +4,8 @@
 
 Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 추가했습니다. Kotlin + Android 기본 View로 구현되어 외부 UI 라이브러리 없이 빌드됩니다. Supabase 설정을 추가하면 이메일 로그인과 PostgreSQL 물품 조회/등록이 실제 서버와 연동됩니다.
 
+이메일/Google 로그인과 PortOne PASS 본인인증을 연결하려면 [로그인 및 PASS 설정 가이드](./AUTH_SETUP.md)를 따라 외부 콘솔과 로컬 공개 식별자를 설정합니다.
+
 ## 팀원 빠른 시작
 
 처음 참여하는 팀원은 [팀 협업 가이드](./CONTRIBUTING.md)를 순서대로 따라 하면 됩니다. GitHub 초대 승인, 프로젝트 복제, Android Studio 실행, Supabase 연결, 브랜치 생성과 Pull Request 방법까지 설명되어 있습니다.
