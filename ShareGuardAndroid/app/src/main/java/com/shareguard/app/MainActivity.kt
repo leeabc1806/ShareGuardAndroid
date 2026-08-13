@@ -1,6 +1,7 @@
 package com.shareguard.app
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -19,8 +20,10 @@ import android.widget.Toast
 import com.shareguard.app.data.NewRemoteItem
 import com.shareguard.app.data.RemoteItem
 import com.shareguard.app.data.SupabaseRestClient
+import com.shareguard.app.data.TossConfirmClient
 import java.text.NumberFormat
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
@@ -115,6 +118,7 @@ class MainActivity : Activity() {
     private lateinit var bottomNav: LinearLayout
     private lateinit var supabase: SupabaseRestClient
     private var sessionToken: String? = null
+    private var pendingPaymentContractId: Int? = null
 
     private val users = mutableListOf(
         User(1, "김민수", "대여자", true, 850, 4.9, 28, 120),
@@ -145,6 +149,31 @@ class MainActivity : Activity() {
         buildShell()
         render()
         loadRemoteItems()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != TOSS_PAYMENT_REQUEST) return
+
+        val contractId = pendingPaymentContractId
+        pendingPaymentContractId = null
+        val contract = contracts.find { it.id == contractId }
+        if (contract == null) {
+            toast("결제 대상 거래를 찾을 수 없습니다.")
+            return
+        }
+
+        if (resultCode != RESULT_OK || data == null) {
+            val message = data?.getStringExtra(TossPaymentActivity.RESULT_ERROR_MESSAGE)
+                ?: "결제가 취소되었습니다."
+            toast(message)
+            return
+        }
+
+        val paymentKey = data.getStringExtra(TossPaymentActivity.RESULT_PAYMENT_KEY).orEmpty()
+        val orderId = data.getStringExtra(TossPaymentActivity.RESULT_ORDER_ID).orEmpty()
+        val amount = data.getLongExtra(TossPaymentActivity.RESULT_AMOUNT, 0L)
+        confirmPayment(contract, paymentKey, orderId, amount)
     }
 
     private fun buildShell() {
@@ -700,9 +729,59 @@ class MainActivity : Activity() {
             toast("본인 인증 후 결제할 수 있습니다.")
             return
         }
-        contract.status = ContractStatus.PAID
-        toast("에스크로 결제가 완료되었습니다.")
-        render()
+        val reservation = reservations.find { it.id == contract.reservationId }
+        if (reservation == null) {
+            toast("예약 정보를 찾을 수 없습니다.")
+            return
+        }
+
+        val item = itemById(reservation.itemId)
+        val clientKey = BuildConfig.TOSS_CLIENT_KEY.ifBlank { TOSS_DOCS_CLIENT_KEY }
+        pendingPaymentContractId = contract.id
+        startActivityForResult(
+            TossPaymentActivity.intent(
+                context = this,
+                clientKey = clientKey,
+                customerKey = tossCustomerKey(),
+                orderId = "shareguard-${contract.id}-${System.currentTimeMillis()}",
+                orderName = item.title.take(100),
+                amount = reservation.totalAmount.toLong()
+            ),
+            TOSS_PAYMENT_REQUEST
+        )
+    }
+
+    private fun confirmPayment(contract: Contract, paymentKey: String, orderId: String, amount: Long) {
+        val confirmClient = TossConfirmClient(BuildConfig.TOSS_CONFIRM_URL)
+        if (!confirmClient.isConfigured) {
+            contract.status = ContractStatus.PAID
+            toast("테스트 결제 인증 완료. 서버 승인 URL 미설정으로 데모 완료 처리했습니다.")
+            render()
+            return
+        }
+
+        toast("결제 승인 확인 중입니다.")
+        Thread {
+            val result = runCatching { confirmClient.confirm(paymentKey, orderId, amount) }
+            runOnUiThread {
+                result.onSuccess {
+                    contract.status = ContractStatus.PAID
+                    toast("에스크로 결제가 승인되었습니다.")
+                    render()
+                }.onFailure { error ->
+                    toast(error.message ?: "결제 승인에 실패했습니다.")
+                }
+            }
+        }.start()
+    }
+
+    private fun tossCustomerKey(): String {
+        val prefs = getSharedPreferences("shareguard_payment", MODE_PRIVATE)
+        val existing = prefs.getString("toss_customer_key", null)
+        if (!existing.isNullOrBlank()) return existing
+        val generated = UUID.randomUUID().toString()
+        prefs.edit().putString("toss_customer_key", generated).apply()
+        return generated
     }
 
     private fun sign(contract: Contract) {
@@ -934,5 +1013,7 @@ class MainActivity : Activity() {
     private companion object {
         const val match = ViewGroup.LayoutParams.MATCH_PARENT
         const val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+        const val TOSS_PAYMENT_REQUEST = 9001
+        const val TOSS_DOCS_CLIENT_KEY = "test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm"
     }
 }
