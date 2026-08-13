@@ -1,3 +1,11 @@
 # Keep the existing sdk.dir line in local.properties and add these values.
 SUPABASE_URL=https://tqfcukcfiaywxibpcvzw.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_nbmpT2BjQLjPkYzqvFaXoQ_TySJj02S
+
+# Toss Payments
+# If omitted, the Android app falls back to Toss Payments' public docs test client key.
+TOSS_CLIENT_KEY=test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm
+
+# Your backend endpoint that calls POST https://api.tosspayments.com/v1/payments/confirm.
+# Never put the Toss secret key in the Android app.
+TOSS_CONFIRM_URL=https://your-api.example.com/payments/toss/confirm
