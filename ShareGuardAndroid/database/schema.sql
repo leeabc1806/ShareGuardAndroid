@@ -168,6 +168,7 @@ create index item_images_item_id_idx on public.item_images(item_id);
 create index payments_payer_id_idx on public.payments(payer_id);
 create index chat_room_members_user_id_idx on public.chat_room_members(user_id);
 create index chat_messages_room_created_at_idx on public.chat_messages(room_id, created_at desc);
+create index chat_messages_sender_id_idx on public.chat_messages(sender_id);
 create index condition_photos_contract_id_idx on public.condition_photos(contract_id);
 create index condition_photos_uploader_id_idx on public.condition_photos(uploader_id);
 create index qr_verifications_contract_id_idx on public.qr_verifications(contract_id);
@@ -258,6 +259,247 @@ create trigger on_reservation_created
 after insert on public.reservations
 for each row execute function private.create_reservation_chat_room();
 
+-- Owner-only, atomic reservation decisions exposed through the Data API.
+-- SECURITY INVOKER keeps the caller's RLS and table grants in force.
+create or replace function public.approve_reservation(p_reservation_id uuid)
+returns public.rental_contracts
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+    approved_reservation public.reservations;
+    created_contract public.rental_contracts;
+begin
+    update public.reservations r
+    set status = 'approved'
+    where r.id = p_reservation_id
+      and r.status = 'pending'
+      and exists (
+          select 1 from public.items i
+          where i.id = r.item_id and i.owner_id = (select auth.uid())
+      )
+    returning r.* into approved_reservation;
+
+    if approved_reservation.id is null then
+        raise exception '예약이 없거나 승인 권한이 없습니다.' using errcode = 'P0001';
+    end if;
+
+    insert into public.rental_contracts (reservation_id, contract_snapshot)
+    values (
+        approved_reservation.id,
+        jsonb_build_object(
+            'item_id', approved_reservation.item_id,
+            'borrower_id', approved_reservation.borrower_id,
+            'start_date', approved_reservation.start_date,
+            'end_date', approved_reservation.end_date,
+            'rental_fee', approved_reservation.rental_fee,
+            'deposit', approved_reservation.deposit,
+            'approved_at', now()
+        )
+    )
+    returning * into created_contract;
+
+    return created_contract;
+end;
+$$;
+
+create or replace function public.reject_reservation(p_reservation_id uuid)
+returns public.reservations
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+    rejected_reservation public.reservations;
+begin
+    update public.reservations r
+    set status = 'rejected'
+    where r.id = p_reservation_id
+      and r.status = 'pending'
+      and exists (
+          select 1 from public.items i
+          where i.id = r.item_id and i.owner_id = (select auth.uid())
+      )
+    returning r.* into rejected_reservation;
+
+    if rejected_reservation.id is null then
+        raise exception '예약이 없거나 거절 권한이 없습니다.' using errcode = 'P0001';
+    end if;
+
+    return rejected_reservation;
+end;
+$$;
+
+revoke all on function public.approve_reservation(uuid) from public, anon;
+revoke all on function public.reject_reservation(uuid) from public, anon;
+grant execute on function public.approve_reservation(uuid) to authenticated;
+grant execute on function public.reject_reservation(uuid) to authenticated;
+
+create or replace function public.pay_demo_reservation(p_reservation_id uuid)
+returns public.payments
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+    target_reservation public.reservations;
+    created_payment public.payments;
+begin
+    select * into target_reservation
+    from public.reservations r
+    where r.id = p_reservation_id
+      and r.borrower_id = (select auth.uid())
+      and r.status = 'approved'
+    for update;
+
+    if target_reservation.id is null then
+        raise exception '결제 가능한 예약이 아니거나 권한이 없습니다.' using errcode = 'P0001';
+    end if;
+
+    insert into public.payments (reservation_id, payer_id, provider, amount, status, paid_at)
+    values (target_reservation.id, (select auth.uid()), 'demo', target_reservation.total_amount, 'held', now())
+    returning * into created_payment;
+
+    update public.reservations set status = 'paid' where id = target_reservation.id;
+    return created_payment;
+end;
+$$;
+
+create or replace function public.sign_rental_contract(p_contract_id uuid)
+returns public.rental_contracts
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+    caller_id uuid := (select auth.uid());
+    target_contract public.rental_contracts;
+    target_reservation_id uuid;
+    reservation_borrower uuid;
+    item_owner uuid;
+    reservation_status text;
+    contract_status text;
+begin
+    select c.reservation_id, r.borrower_id, i.owner_id, r.status, c.status
+    into target_reservation_id, reservation_borrower, item_owner, reservation_status, contract_status
+    from public.rental_contracts c
+    join public.reservations r on r.id = c.reservation_id
+    join public.items i on i.id = r.item_id
+    where c.id = p_contract_id
+    for update of c;
+
+    if target_reservation_id is null or caller_id not in (reservation_borrower, item_owner) then
+        raise exception '계약이 없거나 서명 권한이 없습니다.' using errcode = 'P0001';
+    end if;
+    if reservation_status <> 'paid' or contract_status not in ('draft', 'signed') then
+        raise exception '결제 완료 후에만 서명할 수 있습니다.' using errcode = 'P0001';
+    end if;
+
+    update public.rental_contracts
+    set owner_signed_at = case when caller_id = item_owner then coalesce(owner_signed_at, now()) else owner_signed_at end,
+        borrower_signed_at = case when caller_id = reservation_borrower then coalesce(borrower_signed_at, now()) else borrower_signed_at end
+    where id = p_contract_id
+    returning * into target_contract;
+
+    if target_contract.owner_signed_at is not null and target_contract.borrower_signed_at is not null then
+        update public.rental_contracts set status = 'signed'
+        where id = p_contract_id returning * into target_contract;
+    end if;
+    return target_contract;
+end;
+$$;
+
+create or replace function public.verify_rental_transition(p_contract_id uuid, p_action text)
+returns public.rental_contracts
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+    caller_id uuid := (select auth.uid());
+    target_contract public.rental_contracts;
+    target_reservation_id uuid;
+    target_borrower_id uuid;
+    target_contract_status text;
+    item_owner uuid;
+begin
+    if p_action not in ('start', 'end') then
+        raise exception '지원하지 않는 QR 인증 단계입니다.' using errcode = '22023';
+    end if;
+
+    select c.reservation_id, c.status, r.borrower_id, i.owner_id
+    into target_reservation_id, target_contract_status, target_borrower_id, item_owner
+    from public.rental_contracts c
+    join public.reservations r on r.id = c.reservation_id
+    join public.items i on i.id = r.item_id
+    where c.id = p_contract_id
+    for update of c, r;
+
+    if target_reservation_id is null or caller_id not in (target_borrower_id, item_owner) then
+        raise exception '계약이 없거나 인증 권한이 없습니다.' using errcode = 'P0001';
+    end if;
+
+    if p_action = 'start' then
+        if target_contract_status <> 'signed' or not exists (
+            select 1 from public.condition_photos p where p.contract_id = p_contract_id and p.phase = 'before'
+        ) then
+            raise exception '양측 서명과 대여 전 사진이 필요합니다.' using errcode = 'P0001';
+        end if;
+        insert into public.qr_verifications (contract_id, verified_by, verification_type)
+        values (p_contract_id, caller_id, 'start');
+        update public.rental_contracts set status = 'active' where id = p_contract_id returning * into target_contract;
+        update public.reservations set status = 'renting' where id = target_contract.reservation_id;
+    else
+        if target_contract_status <> 'active' or not exists (
+            select 1 from public.condition_photos p where p.contract_id = p_contract_id and p.phase = 'after'
+        ) then
+            raise exception '대여 중 상태와 반납 후 사진이 필요합니다.' using errcode = 'P0001';
+        end if;
+        insert into public.qr_verifications (contract_id, verified_by, verification_type)
+        values (p_contract_id, caller_id, 'end');
+        update public.rental_contracts set status = 'completed' where id = p_contract_id returning * into target_contract;
+        update public.reservations set status = 'completed' where id = target_contract.reservation_id;
+        update public.payments set status = 'refunded', refunded_at = now()
+        where reservation_id = target_contract.reservation_id and provider = 'demo';
+    end if;
+    return target_contract;
+end;
+$$;
+
+create or replace function public.open_rental_dispute(
+    p_reservation_id uuid,
+    p_reported_user_id uuid,
+    p_report_type text,
+    p_reason text
+)
+returns public.reports
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+    created_report public.reports;
+begin
+    insert into public.reports (reservation_id, reporter_id, reported_user_id, report_type, reason)
+    values (p_reservation_id, (select auth.uid()), p_reported_user_id, p_report_type, p_reason)
+    returning * into created_report;
+
+    update public.reservations set status = 'disputed' where id = p_reservation_id;
+    update public.rental_contracts set status = 'disputed' where reservation_id = p_reservation_id;
+    return created_report;
+end;
+$$;
+
+revoke all on function public.pay_demo_reservation(uuid) from public, anon;
+revoke all on function public.sign_rental_contract(uuid) from public, anon;
+revoke all on function public.verify_rental_transition(uuid, text) from public, anon;
+revoke all on function public.open_rental_dispute(uuid, uuid, text, text) from public, anon;
+grant execute on function public.pay_demo_reservation(uuid) to authenticated;
+grant execute on function public.sign_rental_contract(uuid) to authenticated;
+grant execute on function public.verify_rental_transition(uuid, text) to authenticated;
+grant execute on function public.open_rental_dispute(uuid, uuid, text, text) to authenticated;
+
 revoke all on schema private from public, anon, authenticated;
 revoke execute on function private.set_updated_at() from public, anon, authenticated;
 revoke execute on function private.handle_new_user() from public, anon, authenticated;
@@ -290,6 +532,8 @@ grant select on public.items, public.item_images to anon, authenticated;
 grant insert, update, delete on public.items, public.item_images to authenticated;
 grant select, insert, update on public.reservations to authenticated;
 grant select on public.payments to authenticated;
+grant insert on public.payments to authenticated;
+grant update (status, refunded_at) on public.payments to authenticated;
 grant select, insert, update on public.rental_contracts to authenticated;
 grant select on public.chat_rooms, public.chat_room_members to authenticated;
 grant select, insert on public.chat_messages to authenticated;
@@ -378,6 +622,37 @@ using (exists (
     where r.id = payments.reservation_id
       and (r.borrower_id = (select auth.uid()) or i.owner_id = (select auth.uid()))
 ));
+create policy payments_insert_demo_borrower on public.payments
+for insert to authenticated
+with check (
+    payer_id = (select auth.uid())
+    and provider = 'demo'
+    and status = 'held'
+    and exists (
+        select 1 from public.reservations r
+        where r.id = payments.reservation_id
+          and r.borrower_id = (select auth.uid())
+          and r.status = 'approved'
+          and r.total_amount = payments.amount
+    )
+);
+create policy payments_refund_completed_demo on public.payments
+for update to authenticated
+using (
+    provider = 'demo' and exists (
+        select 1
+        from public.reservations r
+        join public.items i on i.id = r.item_id
+        where r.id = payments.reservation_id
+          and (r.borrower_id = (select auth.uid()) or i.owner_id = (select auth.uid()))
+    )
+)
+with check (
+    provider = 'demo' and status = 'refunded' and exists (
+        select 1 from public.reservations r
+        where r.id = payments.reservation_id and r.status = 'completed'
+    )
+);
 
 create policy contracts_read_participants on public.rental_contracts
 for select to authenticated
@@ -575,7 +850,17 @@ using (bucket_id = 'item-images' and owner_id = (select auth.uid())::text);
 
 create policy condition_photos_storage_read on storage.objects
 for select to authenticated using (
-    bucket_id = 'condition-photos' and (storage.foldername(name))[1] = (select auth.uid())::text
+    bucket_id = 'condition-photos' and (
+        owner_id = (select auth.uid())::text or exists (
+            select 1
+            from public.condition_photos p
+            join public.rental_contracts c on c.id = p.contract_id
+            join public.reservations r on r.id = c.reservation_id
+            join public.items i on i.id = r.item_id
+            where p.storage_path = storage.objects.name
+              and (r.borrower_id = (select auth.uid()) or i.owner_id = (select auth.uid()))
+        )
+    )
 );
 create policy condition_photos_storage_insert on storage.objects
 for insert to authenticated with check (

@@ -7,7 +7,9 @@ import java.net.URL
 
 data class AuthResult(
     val accessToken: String? = null,
+    val refreshToken: String? = null,
     val userId: String? = null,
+    val expiresAt: Long = 0L,
     val message: String
 ) {
     val isSignedIn: Boolean get() = !accessToken.isNullOrBlank()
@@ -15,6 +17,7 @@ data class AuthResult(
 
 data class RemoteItem(
     val id: String,
+    val ownerId: String,
     val title: String,
     val category: String,
     val description: String,
@@ -30,6 +33,43 @@ data class NewRemoteItem(
     val dailyPrice: Int,
     val deposit: Int,
     val address: String
+)
+
+data class RemoteReservation(
+    val id: String,
+    val itemId: String,
+    val borrowerId: String,
+    val startDate: String,
+    val endDate: String,
+    val rentalFee: Int,
+    val deposit: Int,
+    val totalAmount: Int,
+    val status: String
+)
+
+data class RemoteContract(
+    val id: String,
+    val reservationId: String,
+    val status: String,
+    val ownerSigned: Boolean,
+    val borrowerSigned: Boolean,
+    val beforePhotos: Int = 0,
+    val afterPhotos: Int = 0
+)
+
+data class RemoteChatMessage(
+    val id: Long,
+    val roomId: String,
+    val senderId: String,
+    val body: String
+)
+
+data class RemoteReport(
+    val id: String,
+    val reservationId: String,
+    val type: String,
+    val reason: String,
+    val status: String
 )
 
 class SupabaseRestClient(
@@ -54,13 +94,18 @@ class SupabaseRestClient(
         return parseAuth(request("/auth/v1/signup", "POST", body))
     }
 
+    fun refreshSession(refreshToken: String): AuthResult {
+        val body = JSONObject().put("refresh_token", refreshToken)
+        return parseAuth(request("/auth/v1/token?grant_type=refresh_token", "POST", body))
+    }
+
     fun signOut(accessToken: String) {
         request("/auth/v1/logout", "POST", JSONObject(), accessToken)
     }
 
     fun fetchItems(accessToken: String? = null): List<RemoteItem> {
         val response = request(
-            "/rest/v1/items?select=id,title,category,description,daily_price,deposit,address" +
+            "/rest/v1/items?select=id,owner_id,title,category,description,daily_price,deposit,address" +
                 "&status=eq.active&order=created_at.desc",
             "GET",
             accessToken = accessToken
@@ -72,6 +117,7 @@ class SupabaseRestClient(
             val row = rows.getJSONObject(index)
             RemoteItem(
                 id = row.getString("id"),
+                ownerId = row.getString("owner_id"),
                 title = row.getString("title"),
                 category = row.optString("category", "기타"),
                 description = row.optString("description", ""),
@@ -101,6 +147,7 @@ class SupabaseRestClient(
         val row = JSONArray(response.body).getJSONObject(0)
         return RemoteItem(
             id = row.getString("id"),
+            ownerId = row.getString("owner_id"),
             title = row.getString("title"),
             category = row.optString("category", "기타"),
             description = row.optString("description", ""),
@@ -110,17 +157,356 @@ class SupabaseRestClient(
         )
     }
 
+    fun updateItem(itemId: String, item: NewRemoteItem, accessToken: String): RemoteItem {
+        val payload = JSONObject()
+            .put("title", item.title)
+            .put("category", item.category)
+            .put("description", item.description)
+            .put("daily_price", item.dailyPrice)
+            .put("deposit", item.deposit)
+            .put("address", item.address)
+        val response = request(
+            "/rest/v1/items?id=eq.$itemId",
+            "PATCH",
+            payload,
+            accessToken,
+            mapOf("Prefer" to "return=representation")
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val row = JSONArray(response.body).getJSONObject(0)
+        return RemoteItem(
+            id = row.getString("id"),
+            ownerId = row.getString("owner_id"),
+            title = row.getString("title"),
+            category = row.optString("category", "기타"),
+            description = row.optString("description", ""),
+            dailyPrice = row.getInt("daily_price"),
+            deposit = row.getInt("deposit"),
+            address = row.optString("address", "거래 위치 협의")
+        )
+    }
+
+    fun hideItem(itemId: String, accessToken: String) {
+        val response = request(
+            "/rest/v1/items?id=eq.$itemId",
+            "PATCH",
+            JSONObject().put("status", "hidden"),
+            accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun fetchReservations(accessToken: String): List<RemoteReservation> {
+        val response = request(
+            "/rest/v1/reservations?select=id,item_id,borrower_id,start_date,end_date,rental_fee,deposit,total_amount,status" +
+                "&order=created_at.desc",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { index -> rows.getJSONObject(index).toRemoteReservation() }
+    }
+
+    fun fetchContracts(accessToken: String): List<RemoteContract> {
+        val response = request(
+            "/rest/v1/rental_contracts?select=id,reservation_id,status,owner_signed_at,borrower_signed_at&order=created_at.desc",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val photoResponse = request(
+            "/rest/v1/condition_photos?select=contract_id,phase",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!photoResponse.isSuccessful) throw IllegalStateException(photoResponse.errorMessage())
+        val photos = JSONArray(photoResponse.body)
+        val counts = mutableMapOf<String, Pair<Int, Int>>()
+        (0 until photos.length()).forEach { index ->
+            val photo = photos.getJSONObject(index)
+            val contractId = photo.getString("contract_id")
+            val current = counts[contractId] ?: (0 to 0)
+            counts[contractId] = if (photo.getString("phase") == "before") {
+                current.copy(first = current.first + 1)
+            } else {
+                current.copy(second = current.second + 1)
+            }
+        }
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            val photoCount = counts[row.getString("id")] ?: (0 to 0)
+            RemoteContract(
+                id = row.getString("id"),
+                reservationId = row.getString("reservation_id"),
+                status = row.getString("status"),
+                ownerSigned = !row.isNull("owner_signed_at"),
+                borrowerSigned = !row.isNull("borrower_signed_at"),
+                beforePhotos = photoCount.first,
+                afterPhotos = photoCount.second
+            )
+        }
+    }
+
+    fun createReservation(
+        itemId: String,
+        startDate: String,
+        endDate: String,
+        rentalFee: Int,
+        deposit: Int,
+        accessToken: String
+    ): RemoteReservation {
+        val payload = JSONObject()
+            .put("item_id", itemId)
+            .put("start_date", startDate)
+            .put("end_date", endDate)
+            .put("rental_fee", rentalFee)
+            .put("deposit", deposit)
+        val response = request(
+            "/rest/v1/reservations",
+            "POST",
+            payload,
+            accessToken,
+            mapOf("Prefer" to "return=representation")
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        return JSONArray(response.body).getJSONObject(0).toRemoteReservation()
+    }
+
+    fun approveReservation(reservationId: String, accessToken: String): RemoteContract {
+        val response = request(
+            "/rest/v1/rpc/approve_reservation",
+            "POST",
+            JSONObject().put("p_reservation_id", reservationId),
+            accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val row = JSONObject(response.body)
+        return row.toRemoteContract()
+    }
+
+    fun rejectReservation(reservationId: String, accessToken: String) {
+        val response = request(
+            "/rest/v1/rpc/reject_reservation",
+            "POST",
+            JSONObject().put("p_reservation_id", reservationId),
+            accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun payDemoReservation(reservationId: String, accessToken: String) {
+        rpc("pay_demo_reservation", JSONObject().put("p_reservation_id", reservationId), accessToken)
+    }
+
+    fun signContract(contractId: String, accessToken: String): RemoteContract {
+        val response = rpc("sign_rental_contract", JSONObject().put("p_contract_id", contractId), accessToken)
+        return JSONObject(response.body).toRemoteContract()
+    }
+
+    fun verifyRental(contractId: String, action: String, accessToken: String): RemoteContract {
+        val response = rpc(
+            "verify_rental_transition",
+            JSONObject().put("p_contract_id", contractId).put("p_action", action),
+            accessToken
+        )
+        return JSONObject(response.body).toRemoteContract()
+    }
+
+    fun uploadConditionPhoto(
+        contractId: String,
+        phase: String,
+        userId: String,
+        bytes: ByteArray,
+        mimeType: String,
+        accessToken: String
+    ): String {
+        require(phase == "before" || phase == "after") { "사진 단계가 올바르지 않습니다." }
+        require(bytes.isNotEmpty() && bytes.size <= 10 * 1024 * 1024) { "사진은 10MB 이하여야 합니다." }
+        val extension = when (mimeType) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            else -> "jpg"
+        }
+        val storagePath = "$userId/$contractId/$phase/${System.currentTimeMillis()}.$extension"
+        val upload = binaryRequest(
+            "/storage/v1/object/condition-photos/$storagePath",
+            "POST",
+            bytes,
+            mimeType,
+            accessToken
+        )
+        if (!upload.isSuccessful) throw IllegalStateException(upload.errorMessage())
+
+        val metadata = request(
+            "/rest/v1/condition_photos",
+            "POST",
+            JSONObject()
+                .put("contract_id", contractId)
+                .put("phase", phase)
+                .put("storage_path", storagePath),
+            accessToken,
+            mapOf("Prefer" to "return=minimal")
+        )
+        if (!metadata.isSuccessful) throw IllegalStateException(metadata.errorMessage())
+        return storagePath
+    }
+
+    fun fetchChatRoom(reservationId: String, accessToken: String): String? {
+        val response = request(
+            "/rest/v1/chat_rooms?select=id&reservation_id=eq.$reservationId&limit=1",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val rows = JSONArray(response.body)
+        return if (rows.length() == 0) null else rows.getJSONObject(0).getString("id")
+    }
+
+    fun fetchChatMessages(roomId: String, accessToken: String): List<RemoteChatMessage> {
+        val response = request(
+            "/rest/v1/chat_messages?select=id,room_id,sender_id,body&room_id=eq.$roomId&order=created_at.asc",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            RemoteChatMessage(
+                row.getLong("id"),
+                row.getString("room_id"),
+                row.getString("sender_id"),
+                row.getString("body")
+            )
+        }
+    }
+
+    fun sendChatMessage(roomId: String, body: String, accessToken: String) {
+        require(body.trim().isNotEmpty() && body.length <= 2000) { "메시지는 1~2000자로 입력하세요." }
+        val response = request(
+            "/rest/v1/chat_messages",
+            "POST",
+            JSONObject().put("room_id", roomId).put("body", body.trim()),
+            accessToken,
+            mapOf("Prefer" to "return=minimal")
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun createReview(
+        reservationId: String,
+        revieweeId: String,
+        rating: Int,
+        content: String,
+        accessToken: String
+    ) {
+        val response = request(
+            "/rest/v1/reviews",
+            "POST",
+            JSONObject()
+                .put("reservation_id", reservationId)
+                .put("reviewee_id", revieweeId)
+                .put("rating", rating)
+                .put("content", content),
+            accessToken,
+            mapOf("Prefer" to "return=minimal")
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun openDispute(
+        reservationId: String,
+        reportedUserId: String,
+        reason: String,
+        accessToken: String
+    ) {
+        rpc(
+            "open_rental_dispute",
+            JSONObject()
+                .put("p_reservation_id", reservationId)
+                .put("p_reported_user_id", reportedUserId)
+                .put("p_report_type", "damage")
+                .put("p_reason", reason),
+            accessToken
+        )
+    }
+
+    fun fetchReports(accessToken: String): List<RemoteReport> {
+        val response = request(
+            "/rest/v1/reports?select=id,reservation_id,report_type,reason,status&order=created_at.desc",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            RemoteReport(
+                id = row.getString("id"),
+                reservationId = row.getString("reservation_id"),
+                type = row.optString("report_type", "other"),
+                reason = row.optString("reason", ""),
+                status = row.optString("status", "open")
+            )
+        }
+    }
+
+    fun resolveReport(reportId: String, status: String, resolution: String, accessToken: String) {
+        require(status == "resolved" || status == "dismissed") { "처리 상태가 올바르지 않습니다." }
+        val response = request(
+            "/rest/v1/reports?id=eq.$reportId",
+            "PATCH",
+            JSONObject()
+                .put("status", status)
+                .put("resolution", resolution)
+                .put("resolved_at", java.time.Instant.now().toString()),
+            accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    private fun rpc(name: String, body: JSONObject, accessToken: String): HttpResponse {
+        val response = request("/rest/v1/rpc/$name", "POST", body, accessToken)
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        return response
+    }
+
+    private fun JSONObject.toRemoteContract() = RemoteContract(
+        id = getString("id"),
+        reservationId = getString("reservation_id"),
+        status = getString("status"),
+        ownerSigned = !isNull("owner_signed_at"),
+        borrowerSigned = !isNull("borrower_signed_at")
+    )
+
+    private fun JSONObject.toRemoteReservation() = RemoteReservation(
+        id = getString("id"),
+        itemId = getString("item_id"),
+        borrowerId = getString("borrower_id"),
+        startDate = getString("start_date"),
+        endDate = getString("end_date"),
+        rentalFee = getInt("rental_fee"),
+        deposit = getInt("deposit"),
+        totalAmount = getInt("total_amount"),
+        status = getString("status")
+    )
+
     private fun parseAuth(response: HttpResponse): AuthResult {
         if (!response.isSuccessful) return AuthResult(message = response.errorMessage())
         val json = JSONObject(response.body)
         val token = json.optString("access_token").ifBlank { null }
+        val refreshToken = json.optString("refresh_token").ifBlank { null }
         val userId = json.optJSONObject("user")?.optString("id")?.ifBlank { null }
+        val expiresIn = json.optLong("expires_in", 3600L)
+        val expiresAt = if (token == null) 0L else System.currentTimeMillis() + expiresIn * 1000L
         val message = if (token == null) {
             "가입 확인 메일을 확인한 뒤 로그인하세요."
         } else {
             "Supabase 로그인 완료"
         }
-        return AuthResult(token, userId, message)
+        return AuthResult(token, refreshToken, userId, expiresAt, message)
     }
 
     private fun request(
@@ -148,6 +534,34 @@ class SupabaseRestClient(
                 connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
             }
 
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val responseBody = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            HttpResponse(status, responseBody)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun binaryRequest(
+        path: String,
+        method: String,
+        bytes: ByteArray,
+        contentType: String,
+        accessToken: String
+    ): HttpResponse {
+        check(isConfigured) { "Supabase URL과 공개 키가 설정되지 않았습니다." }
+        val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
+        return try {
+            connection.requestMethod = method
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 30_000
+            connection.doOutput = true
+            connection.setRequestProperty("apikey", publishableKey)
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
+            connection.setRequestProperty("Content-Type", contentType)
+            connection.setRequestProperty("x-upsert", "false")
+            connection.outputStream.use { it.write(bytes) }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val responseBody = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
