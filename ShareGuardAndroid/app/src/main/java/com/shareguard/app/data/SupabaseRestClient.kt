@@ -23,7 +23,9 @@ data class RemoteItem(
     val description: String,
     val dailyPrice: Int,
     val deposit: Int,
-    val address: String
+    val address: String,
+    val latitude: Double?,
+    val longitude: Double?
 )
 
 data class NewRemoteItem(
@@ -32,7 +34,9 @@ data class NewRemoteItem(
     val description: String,
     val dailyPrice: Int,
     val deposit: Int,
-    val address: String
+    val address: String,
+    val latitude: Double?,
+    val longitude: Double?
 )
 
 data class RemoteReservation(
@@ -61,7 +65,8 @@ data class RemoteChatMessage(
     val id: Long,
     val roomId: String,
     val senderId: String,
-    val body: String
+    val body: String,
+    val createdAt: String
 )
 
 data class RemoteReport(
@@ -105,7 +110,7 @@ class SupabaseRestClient(
 
     fun fetchItems(accessToken: String? = null): List<RemoteItem> {
         val response = request(
-            "/rest/v1/items?select=id,owner_id,title,category,description,daily_price,deposit,address" +
+            "/rest/v1/items?select=id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude" +
                 "&status=eq.active&order=created_at.desc",
             "GET",
             accessToken = accessToken
@@ -123,7 +128,9 @@ class SupabaseRestClient(
                 description = row.optString("description", ""),
                 dailyPrice = row.getInt("daily_price"),
                 deposit = row.getInt("deposit"),
-                address = row.optString("address", "거래 위치 협의")
+                address = row.optString("address", "거래 위치 협의"),
+                latitude = row.optNullableDouble("latitude"),
+                longitude = row.optNullableDouble("longitude")
             )
         }
     }
@@ -136,6 +143,8 @@ class SupabaseRestClient(
             .put("daily_price", item.dailyPrice)
             .put("deposit", item.deposit)
             .put("address", item.address)
+            .putNullable("latitude", item.latitude)
+            .putNullable("longitude", item.longitude)
         val response = request(
             "/rest/v1/items",
             "POST",
@@ -153,7 +162,9 @@ class SupabaseRestClient(
             description = row.optString("description", ""),
             dailyPrice = row.getInt("daily_price"),
             deposit = row.getInt("deposit"),
-            address = row.optString("address", "거래 위치 협의")
+            address = row.optString("address", "거래 위치 협의"),
+            latitude = row.optNullableDouble("latitude"),
+            longitude = row.optNullableDouble("longitude")
         )
     }
 
@@ -165,6 +176,8 @@ class SupabaseRestClient(
             .put("daily_price", item.dailyPrice)
             .put("deposit", item.deposit)
             .put("address", item.address)
+            .putNullable("latitude", item.latitude)
+            .putNullable("longitude", item.longitude)
         val response = request(
             "/rest/v1/items?id=eq.$itemId",
             "PATCH",
@@ -182,7 +195,9 @@ class SupabaseRestClient(
             description = row.optString("description", ""),
             dailyPrice = row.getInt("daily_price"),
             deposit = row.getInt("deposit"),
-            address = row.optString("address", "거래 위치 협의")
+            address = row.optString("address", "거래 위치 협의"),
+            latitude = row.optNullableDouble("latitude"),
+            longitude = row.optNullableDouble("longitude")
         )
     }
 
@@ -194,6 +209,44 @@ class SupabaseRestClient(
             accessToken
         )
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun uploadItemImage(
+        itemId: String,
+        userId: String,
+        sortOrder: Int,
+        bytes: ByteArray,
+        mimeType: String,
+        accessToken: String
+    ): String {
+        require(sortOrder in 0..4) { "물품 사진은 최대 5장입니다." }
+        require(bytes.isNotEmpty() && bytes.size <= 10 * 1024 * 1024) { "사진은 10MB 이하여야 합니다." }
+        val extension = when (mimeType) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            else -> "jpg"
+        }
+        val storagePath = "$userId/$itemId/${sortOrder}_${System.currentTimeMillis()}.$extension"
+        val upload = binaryRequest(
+            "/storage/v1/object/item-images/$storagePath",
+            "POST",
+            bytes,
+            mimeType,
+            accessToken
+        )
+        if (!upload.isSuccessful) throw IllegalStateException(upload.errorMessage())
+        val metadata = request(
+            "/rest/v1/item_images",
+            "POST",
+            JSONObject()
+                .put("item_id", itemId)
+                .put("storage_path", storagePath)
+                .put("sort_order", sortOrder),
+            accessToken,
+            mapOf("Prefer" to "return=minimal")
+        )
+        if (!metadata.isSuccessful) throw IllegalStateException(metadata.errorMessage())
+        return storagePath
     }
 
     fun fetchReservations(accessToken: String): List<RemoteReservation> {
@@ -366,7 +419,7 @@ class SupabaseRestClient(
 
     fun fetchChatMessages(roomId: String, accessToken: String): List<RemoteChatMessage> {
         val response = request(
-            "/rest/v1/chat_messages?select=id,room_id,sender_id,body&room_id=eq.$roomId&order=created_at.asc",
+            "/rest/v1/chat_messages?select=id,room_id,sender_id,body,created_at&room_id=eq.$roomId&order=created_at.asc",
             "GET",
             accessToken = accessToken
         )
@@ -378,9 +431,20 @@ class SupabaseRestClient(
                 row.getLong("id"),
                 row.getString("room_id"),
                 row.getString("sender_id"),
-                row.getString("body")
+                row.getString("body"),
+                row.optString("created_at", "")
             )
         }
+    }
+
+    fun markChatRead(roomId: String, userId: String, accessToken: String) {
+        val response = request(
+            "/rest/v1/chat_room_members?room_id=eq.$roomId&user_id=eq.$userId",
+            "PATCH",
+            JSONObject().put("last_read_at", java.time.Instant.now().toString()),
+            accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
     }
 
     fun sendChatMessage(roomId: String, body: String, accessToken: String) {
@@ -453,15 +517,25 @@ class SupabaseRestClient(
         }
     }
 
-    fun resolveReport(reportId: String, status: String, resolution: String, accessToken: String) {
-        require(status == "resolved" || status == "dismissed") { "처리 상태가 올바르지 않습니다." }
+    fun resolveReport(
+        reportId: String,
+        decision: String,
+        deductionAmount: Int,
+        note: String,
+        sanction: String,
+        accessToken: String
+    ) {
+        require(decision in setOf("dismissed", "partial", "uphold")) { "처리 결정이 올바르지 않습니다." }
+        require(deductionAmount >= 0) { "차감액은 0 이상이어야 합니다." }
         val response = request(
-            "/rest/v1/reports?id=eq.$reportId",
-            "PATCH",
+            "/rest/v1/rpc/resolve_report_admin",
+            "POST",
             JSONObject()
-                .put("status", status)
-                .put("resolution", resolution)
-                .put("resolved_at", java.time.Instant.now().toString()),
+                .put("p_report_id", reportId)
+                .put("p_decision", decision)
+                .put("p_deduction_amount", deductionAmount)
+                .put("p_note", note)
+                .put("p_sanction", sanction),
             accessToken
         )
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
@@ -570,6 +644,12 @@ class SupabaseRestClient(
             connection.disconnect()
         }
     }
+
+    private fun JSONObject.optNullableDouble(name: String): Double? =
+        if (isNull(name)) null else optDouble(name).takeUnless(Double::isNaN)
+
+    private fun JSONObject.putNullable(name: String, value: Double?): JSONObject =
+        if (value == null) put(name, JSONObject.NULL) else put(name, value)
 
     private data class HttpResponse(val status: Int, val body: String) {
         val isSuccessful: Boolean get() = status in 200..299

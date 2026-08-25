@@ -29,8 +29,8 @@ android {
         applicationId = "com.shareguard.app"
         minSdk = 26
         targetSdk = 33
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
 
         buildConfigField("String", "SUPABASE_URL", buildConfigString("SUPABASE_URL"))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString("SUPABASE_PUBLISHABLE_KEY"))
@@ -42,6 +42,7 @@ android {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.5.0")
     implementation("com.github.tosspayments:payment-sdk-android:0.1.22")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }
 
 // Some Windows workspace folders mark generated directories as read-only.

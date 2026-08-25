@@ -873,3 +873,149 @@ with check (bucket_id = 'condition-photos' and owner_id = (select auth.uid())::t
 create policy condition_photos_storage_delete on storage.objects
 for delete to authenticated
 using (bucket_id = 'condition-photos' and owner_id = (select auth.uid())::text);
+
+-- Keep profile rating, deal count, and trust score synchronized without an external API.
+create or replace function private.recalculate_profile_trust(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    review_average numeric(2, 1);
+    completed_deals integer;
+    open_disputes integer;
+    is_verified boolean;
+    calculated integer;
+begin
+    select coalesce(avg(r.rating), 0)::numeric(2, 1), count(*)::integer
+      into review_average, completed_deals
+      from public.reviews r where r.reviewee_id = p_user_id;
+    select count(*)::integer into open_disputes
+      from public.reports r where r.reported_user_id = p_user_id and r.status in ('open', 'reviewing');
+    select verified into is_verified from public.profiles where id = p_user_id;
+    calculated := 500
+        + case when is_verified then 150 else 0 end
+        + least(completed_deals * 12, 180)
+        + least(greatest(round((review_average - 3.0) * 80), 0), 160)::integer
+        - least(open_disputes * 80, 320);
+    update public.profiles
+       set rating = review_average,
+           deal_count = completed_deals,
+           trust_score = greatest(0, least(1000, calculated)),
+           updated_at = now()
+     where id = p_user_id;
+end;
+$$;
+
+create or replace function private.sync_trust_from_review()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+    perform private.recalculate_profile_trust(coalesce(new.reviewee_id, old.reviewee_id));
+    return coalesce(new, old);
+end;
+$$;
+
+create or replace function private.sync_trust_from_report()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+    perform private.recalculate_profile_trust(coalesce(new.reported_user_id, old.reported_user_id));
+    return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists reviews_sync_trust on public.reviews;
+create trigger reviews_sync_trust after insert or update or delete on public.reviews
+for each row execute function private.sync_trust_from_review();
+drop trigger if exists reports_sync_trust on public.reports;
+create trigger reports_sync_trust after insert or update or delete on public.reports
+for each row execute function private.sync_trust_from_report();
+
+revoke execute on function private.recalculate_profile_trust(uuid) from public, anon, authenticated;
+revoke execute on function private.sync_trust_from_review() from public, anon, authenticated;
+revoke execute on function private.sync_trust_from_report() from public, anon, authenticated;
+
+-- Auditable administrator dispute resolution and sanctions.
+alter table public.profiles
+    add column if not exists account_status text not null default 'active'
+    check (account_status in ('active', 'warned', 'suspended'));
+
+create table if not exists public.admin_actions (
+    id bigint generated always as identity primary key,
+    report_id uuid not null references public.reports(id) on delete restrict,
+    admin_id uuid not null references public.profiles(id) on delete restrict,
+    decision text not null check (decision in ('dismissed', 'partial', 'uphold')),
+    deduction_amount integer not null default 0 check (deduction_amount >= 0),
+    sanction text not null default 'none' check (sanction in ('none', 'warning', 'hide_item', 'suspend_user')),
+    note text not null check (char_length(note) between 5 and 2000),
+    created_at timestamptz not null default now()
+);
+
+alter table public.admin_actions enable row level security;
+revoke all on public.admin_actions from anon, authenticated;
+grant select, insert on public.admin_actions to authenticated;
+grant usage, select on sequence public.admin_actions_id_seq to authenticated;
+create policy admin_actions_admin_only on public.admin_actions
+for all to authenticated
+using (exists (select 1 from public.profiles p where p.id = (select auth.uid()) and p.role = 'admin'))
+with check (admin_id = (select auth.uid()) and exists (
+    select 1 from public.profiles p where p.id = (select auth.uid()) and p.role = 'admin'
+));
+
+create or replace function public.resolve_report_admin(
+    p_report_id uuid,
+    p_decision text,
+    p_deduction_amount integer,
+    p_note text,
+    p_sanction text
+) returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    caller_id uuid := (select auth.uid());
+    target public.reports;
+    target_item_id uuid;
+begin
+    if not exists (select 1 from public.profiles p where p.id = caller_id and p.role = 'admin') then
+        raise exception '관리자 권한이 필요합니다.' using errcode = '42501';
+    end if;
+    if p_decision not in ('dismissed', 'partial', 'uphold') or
+       p_sanction not in ('none', 'warning', 'hide_item', 'suspend_user') or
+       p_deduction_amount < 0 or char_length(trim(p_note)) < 5 then
+        raise exception '분쟁 처리 입력값이 올바르지 않습니다.' using errcode = '22023';
+    end if;
+    select * into target from public.reports where id = p_report_id for update;
+    if target.id is null or target.status not in ('open', 'reviewing') then
+        raise exception '처리 가능한 신고가 아닙니다.' using errcode = 'P0001';
+    end if;
+    select r.item_id into target_item_id from public.reservations r where r.id = target.reservation_id;
+
+    update public.reports set
+        status = case when p_decision = 'dismissed' then 'dismissed' else 'resolved' end,
+        resolution = p_note,
+        resolved_at = now()
+    where id = p_report_id;
+    insert into public.admin_actions(report_id, admin_id, decision, deduction_amount, sanction, note)
+    values (p_report_id, caller_id, p_decision, p_deduction_amount, p_sanction, trim(p_note));
+
+    update public.rental_contracts set status = 'completed' where reservation_id = target.reservation_id;
+    update public.reservations set status = 'completed' where id = target.reservation_id;
+    update public.payments set
+        status = case when p_decision = 'dismissed' or p_deduction_amount = 0 then 'refunded' else 'partially_refunded' end,
+        refunded_at = now()
+    where reservation_id = target.reservation_id;
+
+    if p_sanction = 'hide_item' then
+        update public.items set status = 'hidden' where id = target_item_id;
+    elsif p_sanction = 'warning' then
+        update public.profiles set account_status = 'warned' where id = target.reported_user_id;
+    elsif p_sanction = 'suspend_user' then
+        update public.profiles set account_status = 'suspended' where id = target.reported_user_id;
+    end if;
+end;
+$$;
+
+revoke all on function public.resolve_report_admin(uuid, text, integer, text, text) from public, anon;
+grant execute on function public.resolve_report_admin(uuid, text, integer, text, text) to authenticated;
