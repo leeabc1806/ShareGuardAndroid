@@ -1,5 +1,6 @@
 # Android/Gradle build output
 ShareGuardAndroid/.gradle/
+backend/.gradle/
 ShareGuardAndroid/build/
 ShareGuardAndroid/app/build/
 **/build/

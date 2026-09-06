@@ -2678,13 +2678,21 @@ class MainActivity : Activity() {
             completeEscrowPayment(contract, "테스트 결제 인증이 완료되었습니다.")
             return
         }
+        val token = sessionToken
+        val remoteReservationId = reservations.find { it.id == contract.reservationId }?.remoteId
+        if (token.isNullOrBlank() || remoteReservationId.isNullOrBlank()) {
+            toast("로그인된 원격 예약만 실제 결제를 승인할 수 있습니다.")
+            return
+        }
 
         toast("결제 승인 확인 중입니다.")
         Thread {
-            val result = runCatching { confirmClient.confirm(paymentKey, orderId, amount) }
+            val result = runCatching { confirmClient.confirm(paymentKey, orderId, amount, remoteReservationId, token) }
             runOnUiThread {
                 result.onSuccess {
-                    completeEscrowPayment(contract, "토스 결제 승인과 에스크로 예치가 완료되었습니다.")
+                    addNotification("🔒", "안전 결제 완료", "대여료와 보증금이 에스크로에 안전하게 보관되었습니다.", Screen.TRANSACTION)
+                    loadRemoteReservations()
+                    toast("토스 결제 승인과 에스크로 예치가 완료되었습니다.")
                 }.onFailure { error ->
                     toast(error.message ?: "결제 승인에 실패했습니다.")
                 }

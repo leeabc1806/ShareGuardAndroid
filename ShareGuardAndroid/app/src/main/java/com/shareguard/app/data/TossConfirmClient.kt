@@ -7,7 +7,7 @@ import java.net.URL
 class TossConfirmClient(private val confirmUrl: String) {
     val isConfigured: Boolean get() = confirmUrl.startsWith("https://") || confirmUrl.startsWith("http://")
 
-    fun confirm(paymentKey: String, orderId: String, amount: Long): String {
+    fun confirm(paymentKey: String, orderId: String, amount: Long, reservationId: String, accessToken: String): String {
         check(isConfigured) { "TOSS_CONFIRM_URL이 설정되지 않았습니다." }
         val connection = URL(confirmUrl).openConnection() as HttpURLConnection
         return try {
@@ -17,8 +17,10 @@ class TossConfirmClient(private val confirmUrl: String) {
             connection.doOutput = true
             connection.setRequestProperty("Accept", "application/json")
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
 
             val body = JSONObject()
+                .put("reservationId", reservationId)
                 .put("paymentKey", paymentKey)
                 .put("orderId", orderId)
                 .put("amount", amount)

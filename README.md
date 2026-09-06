@@ -2,7 +2,7 @@
 
 `ShareGuard_통합문서.pdf`의 SRS/SDD/API 명세를 기준으로 만든 실행 가능한 웹 프로토타입입니다. 별도 서버 없이 [index.html](./index.html)을 브라우저에서 열면 동작합니다.
 
-Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 추가했습니다. Kotlin + Android 기본 View로 구현되어 외부 UI 라이브러리 없이 빌드됩니다. Supabase 설정을 추가하면 이메일 로그인과 PostgreSQL 물품 조회/등록이 실제 서버와 연동됩니다.
+Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 추가했습니다. Kotlin + Android 기본 View로 구현되어 외부 UI 라이브러리 없이 빌드됩니다. 민감한 결제·QR·관리자 처리를 담당하는 [Spring Boot 백엔드](./backend/README.md)도 포함합니다.
 
 ## 팀원 빠른 시작
 
@@ -15,6 +15,7 @@ Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 �
 ├─ README.md
 ├─ CONTRIBUTING.md
 ├─ index.html
+├─ backend/              <- Spring Boot 서버
 └─ ShareGuardAndroid/    <- Android Studio에서 이 폴더 열기
 ```
 
@@ -92,7 +93,7 @@ Android 앱에는 클라이언트 키와 결제 승인 서버 주소만 넣습�
 ```properties
 # ShareGuardAndroid/local.properties
 TOSS_CLIENT_KEY=test_gck_...
-TOSS_CONFIRM_URL=http://10.0.2.2:8080/payments/toss/confirm
+TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
 ```
 
 에뮬레이터에서 PC의 로컬 서버로 접근할 때는 `localhost` 대신 `10.0.2.2`를 사용합니다. 실제 배포 환경에서는 HTTPS 백엔드 주소를 넣습니다.
@@ -127,7 +128,7 @@ TOSS_SECRET_KEY=test_gsk_...
 1. Android 앱이 예약 금액으로 토스 결제위젯을 엽니다.
 2. 사용자가 결제수단을 선택하고 인증을 마칩니다.
 3. 앱이 paymentKey, orderId, amount를 받습니다.
-4. 앱이 백엔드의 TOSS_CONFIRM_URL로 paymentKey, orderId, amount를 보냅니다.
+4. 앱이 백엔드의 TOSS_CONFIRM_URL로 reservationId, paymentKey, orderId, amount와 Supabase access token을 보냅니다.
 5. 백엔드는 DB의 예약 금액과 amount가 같은지 검증합니다.
 6. 백엔드는 TOSS_SECRET_KEY로 토스 결제 승인 API를 호출합니다.
 7. 승인 성공 시 백엔드는 결제 완료 상태를 저장하고 앱에 성공 응답을 줍니다.
@@ -159,13 +160,14 @@ Android 앱 설정 예시:
 ```properties
 # ShareGuardAndroid/local.properties
 TOSS_CLIENT_KEY=test_gck_...
-TOSS_CONFIRM_URL=http://10.0.2.2:8080/payments/toss/confirm
+TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
 ```
 
 Android에서 백엔드로 보내는 JSON 형식:
 
 ```json
 {
+  "reservationId": "00000000-0000-0000-0000-000000000000",
   "paymentKey": "토스가 반환한 결제 키",
   "orderId": "shareguard-1-1720000000000",
   "amount": 350000
