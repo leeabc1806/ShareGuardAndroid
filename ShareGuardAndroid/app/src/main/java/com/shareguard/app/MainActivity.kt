@@ -69,6 +69,10 @@ class MainActivity : Activity() {
         private const val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
         private const val TOSS_PAYMENT_REQUEST = 9001
         private const val LOCATION_PERMISSION_REQUEST = 9002
+        private const val MAP_BROWSE_REQUEST = 9003
+        private const val MAP_PICK_REQUEST = 9004
+        private const val DEFAULT_MAP_LATITUDE = 37.4979
+        private const val DEFAULT_MAP_LONGITUDE = 127.0276
         private const val QR_TOKEN_TTL_MS = 5L * 60L * 1000L
         private const val QR_SIGNATURE_PEPPER = "ShareGuard-MVP-QR-v1"
         private const val TOSS_DOCS_CLIENT_KEY = "test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm"
@@ -237,6 +241,9 @@ class MainActivity : Activity() {
     private var sessionNotice: String? = null
     private var currentLatitude: Double? = null
     private var currentLongitude: Double? = null
+    private var selectedRegistrationLatitude: Double? = null
+    private var selectedRegistrationLongitude: Double? = null
+    private var registrationCoordinateText: TextView? = null
     private var locating = false
     private var reservationStartDate: LocalDate = LocalDate.now().plusDays(1)
     private var reservationEndDate: LocalDate = LocalDate.now().plusDays(3)
@@ -349,6 +356,33 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            MAP_BROWSE_REQUEST -> {
+                if (resultCode == RESULT_OK && data != null) {
+                    val itemId = data.getIntExtra(MapActivity.EXTRA_SELECTED_ITEM_ID, -1)
+                    if (items.any { it.id == itemId }) {
+                        selectedItemId = itemId
+                        screen = Screen.DETAIL
+                        render()
+                    }
+                }
+                return
+            }
+            MAP_PICK_REQUEST -> {
+                if (resultCode == RESULT_OK && data != null) {
+                    selectedRegistrationLatitude = data.getDoubleExtra(
+                        MapActivity.EXTRA_SELECTED_LATITUDE,
+                        Double.NaN
+                    ).takeUnless(Double::isNaN)
+                    selectedRegistrationLongitude = data.getDoubleExtra(
+                        MapActivity.EXTRA_SELECTED_LONGITUDE,
+                        Double.NaN
+                    ).takeUnless(Double::isNaN)
+                    registrationCoordinateText?.text = registrationCoordinatesLabel()
+                }
+                return
+            }
+        }
         val qrResult = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
         if (qrResult != null) {
             val contract = pendingQrContractId?.let { id -> contracts.find { it.id == id } }
@@ -996,33 +1030,75 @@ class MainActivity : Activity() {
                 render()
             }, LinearLayout.LayoutParams(dp(80), dp(44)))
         })
-        content.addView(FrameLayout(this).apply {
-            background = rounded(Color.rgb(214, 227, 241), 16)
-            addView(textView("╱  ╲  ╱  ╲  ╱\n  ╲  ╱  ╲  ╱\n╱  ╲  ╱  ╲  ╱\n  ╲  ╱  ╲  ╱", 34, false, Color.WHITE).apply {
-                gravity = Gravity.CENTER
-            }, FrameLayout.LayoutParams(match, match))
-            listOf(
-                Triple("5만원", 44, 80),
-                Triple("3만원", 230, 180),
-                Triple("2.5만원", 90, 300)
-            ).forEach { (label, left, top) ->
-                addView(statusChip(label), FrameLayout.LayoutParams(wrap, dp(38)).apply {
-                    leftMargin = dp(left)
-                    topMargin = dp(top)
-                })
-            }
-            addView(textView("내 위치", 13, true, Color.WHITE).apply {
-                gravity = Gravity.CENTER
-                background = rounded(Color.rgb(59, 130, 246), 18)
-            }, FrameLayout.LayoutParams(dp(82), dp(42)).apply {
-                gravity = Gravity.CENTER
-            })
-        }.withTop(12).also {
-            it.layoutParams = ViewGroup.MarginLayoutParams(match, dp(430)).apply { topMargin = dp(12) }
-        })
+        content.addView(card(Color.rgb(234, 241, 255)).apply {
+            addView(textView("실제 카카오맵에서 물품 위치를 확인하세요.", 16, true, text))
+            addView(textView("물품 마커를 누르면 상세 화면으로 이동하고, 내 위치 버튼으로 주변 물품을 확인할 수 있습니다.", 13, false, muted).withTop(5))
+            addView(button("카카오맵 열기") { openItemMap() }.withTop(12))
+        }.withTop(12))
         val nearby = filteredItems().take(3)
         content.addView(textView("주변 ${nearby.size}개의 대여 가능 물품", 16, true, text).withTop(20))
         nearby.forEach { item -> content.addView(homeItemRow(item).withTop(10)) }
+    }
+
+    private fun openItemMap() {
+        val mappedItems = filteredItems().filter { it.latitude != null && it.longitude != null }
+        if (mappedItems.isEmpty()) {
+            toast("지도에 표시할 위치 정보가 없습니다.")
+            return
+        }
+
+        val intent = Intent(this, MapActivity::class.java).apply {
+            putExtra(MapActivity.EXTRA_MODE, MapActivity.MODE_BROWSE)
+            putExtra(MapActivity.EXTRA_ITEM_IDS, mappedItems.map { it.id }.toIntArray())
+            putStringArrayListExtra(MapActivity.EXTRA_TITLES, ArrayList(mappedItems.map { it.title }))
+            putStringArrayListExtra(MapActivity.EXTRA_ADDRESSES, ArrayList(mappedItems.map { it.location }))
+            putExtra(MapActivity.EXTRA_LATITUDES, mappedItems.map { it.latitude!! }.toDoubleArray())
+            putExtra(MapActivity.EXTRA_LONGITUDES, mappedItems.map { it.longitude!! }.toDoubleArray())
+        }
+        startActivityForResult(intent, MAP_BROWSE_REQUEST)
+    }
+
+    private fun openLocationPicker(editing: Item?) {
+        val intent = Intent(this, MapActivity::class.java).apply {
+            putExtra(MapActivity.EXTRA_MODE, MapActivity.MODE_PICK)
+            putExtra(
+                MapActivity.EXTRA_INITIAL_LATITUDE,
+                selectedRegistrationLatitude
+                    ?: editing?.latitude
+                    ?: currentLatitude
+                    ?: DEFAULT_MAP_LATITUDE
+            )
+            putExtra(
+                MapActivity.EXTRA_INITIAL_LONGITUDE,
+                selectedRegistrationLongitude
+                    ?: editing?.longitude
+                    ?: currentLongitude
+                    ?: DEFAULT_MAP_LONGITUDE
+            )
+        }
+        startActivityForResult(intent, MAP_PICK_REQUEST)
+    }
+
+    private fun registrationCoordinatesLabel(): String {
+        val latitude = selectedRegistrationLatitude
+        val longitude = selectedRegistrationLongitude
+        if (latitude != null && longitude != null) {
+            return String.format(Locale.US, "선택 좌표: %.6f, %.6f", latitude, longitude)
+        }
+
+        val currentLat = currentLatitude
+        val currentLng = currentLongitude
+        return if (currentLat != null && currentLng != null) {
+            String.format(Locale.US, "미선택 시 현재 위치 사용: %.6f, %.6f", currentLat, currentLng)
+        } else {
+            "좌표 미선택 · 좌표가 없으면 물품이 지도에 표시되지 않습니다."
+        }
+    }
+
+    private fun clearRegistrationCoordinates() {
+        selectedRegistrationLatitude = null
+        selectedRegistrationLongitude = null
+        registrationCoordinateText = null
     }
 
     private fun renderItemDetail() {
@@ -1239,6 +1315,7 @@ class MainActivity : Activity() {
         content.addView(segmentedTabs(listOf("새 물품", "내 물품"), registerTab) { tab ->
             registerTab = tab
             editingItemId = null
+            clearRegistrationCoordinates()
             render()
         }.withTop(14))
         if (registerTab == "내 물품") {
@@ -1302,6 +1379,11 @@ class MainActivity : Activity() {
             addView(field("하루 대여료", priceInput))
             addView(field("보증금", depositInput))
             addView(field("거래 위치", locationInput))
+            registrationCoordinateText = textView(registrationCoordinatesLabel(), 12, false, muted)
+            addView(registrationCoordinateText!!.withTop(6))
+            addView(button("지도에서 거래 위치 선택", secondary = true) {
+                openLocationPicker(editing)
+            }.withTop(8))
             addView(button(if (editing == null) "물품 등록하기" else "수정 내용 저장") {
                 if (!currentUser().verified) {
                     requestIdentityVerification("본인 인증 후 물품을 등록할 수 있습니다.")
@@ -1317,9 +1399,9 @@ class MainActivity : Activity() {
                 item.price = priceInput.text.toString().toIntOrNull() ?: 0
                 item.deposit = depositInput.text.toString().toIntOrNull() ?: 0
                 item.location = locationInput.text.toString().trim()
-                if (editing == null) {
-                    item.latitude = currentLatitude
-                    item.longitude = currentLongitude
+                if (editing == null || selectedRegistrationLatitude != null) {
+                    item.latitude = selectedRegistrationLatitude ?: currentLatitude
+                    item.longitude = selectedRegistrationLongitude ?: currentLongitude
                 }
                 if (editing == null) saveItem(item) else updateItem(item)
             }.withTop(12))
@@ -1361,6 +1443,8 @@ class MainActivity : Activity() {
                         editingItemId = item.id
                         registerCategory = item.category
                         registerTab = "새 물품"
+                        selectedRegistrationLatitude = item.latitude
+                        selectedRegistrationLongitude = item.longitude
                         render()
                     }, LinearLayout.LayoutParams(0, dp(42), 1f))
                     addView(space(8))
@@ -2423,6 +2507,7 @@ class MainActivity : Activity() {
             items.add(0, item)
             registerTab = "내 물품"
             registrationPhotoUris.clear()
+            clearRegistrationCoordinates()
             toast("데모 데이터에 물품이 등록되었습니다.")
             render()
             return
@@ -2454,8 +2539,8 @@ class MainActivity : Activity() {
                         dailyPrice = item.price,
                         deposit = item.deposit,
                         address = item.location,
-                        latitude = currentLatitude,
-                        longitude = currentLongitude
+                        latitude = item.latitude,
+                        longitude = item.longitude
                     ),
                     token
                 )
@@ -2471,6 +2556,7 @@ class MainActivity : Activity() {
                     selectedItemId = items.first().id
                     registerTab = "내 물품"
                     registrationPhotoUris.clear()
+                    clearRegistrationCoordinates()
                     toast("물품과 사진 ${photoUris.size}장이 저장되었습니다.")
                     render()
                 }.onFailure { error ->
@@ -2611,6 +2697,7 @@ class MainActivity : Activity() {
                         if (index >= 0) items[index] = remoteToItem(remote)
                         editingItemId = null
                         registerTab = "내 물품"
+                        clearRegistrationCoordinates()
                         toast("물품 정보가 수정되었습니다.")
                         render()
                     }.onFailure { error -> toast("수정 실패: ${error.message ?: "권한을 확인하세요."}") }
@@ -2620,6 +2707,7 @@ class MainActivity : Activity() {
         }
         editingItemId = null
         registerTab = "내 물품"
+        clearRegistrationCoordinates()
         toast("물품 정보가 수정되었습니다.")
         render()
     }
