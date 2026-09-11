@@ -25,6 +25,15 @@ android {
     namespace = "com.shareguard.app"
     compileSdk = 33
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
     defaultConfig {
         applicationId = "com.shareguard.app"
         minSdk = 26
@@ -34,6 +43,7 @@ android {
 
         buildConfigField("String", "SUPABASE_URL", buildConfigString("SUPABASE_URL"))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString("SUPABASE_PUBLISHABLE_KEY"))
+        buildConfigField("String", "KAKAO_NATIVE_APP_KEY", buildConfigString("KAKAO_NATIVE_APP_KEY"))
         buildConfigField("String", "TOSS_CLIENT_KEY", buildConfigString("TOSS_CLIENT_KEY"))
         buildConfigField("String", "TOSS_CONFIRM_URL", buildConfigString("TOSS_CONFIRM_URL"))
     }
@@ -41,6 +51,7 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.5.0")
+    implementation("com.kakao.maps.open:android:2.15.1")
     implementation("com.github.tosspayments:payment-sdk-android:0.1.22")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

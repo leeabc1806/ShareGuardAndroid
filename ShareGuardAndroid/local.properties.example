@@ -2,6 +2,9 @@
 SUPABASE_URL=https://tqfcukcfiaywxibpcvzw.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_nbmpT2BjQLjPkYzqvFaXoQ_TySJj02S
 
+# Kakao Maps Android SDK (native app key; never commit the real value)
+KAKAO_NATIVE_APP_KEY=your_kakao_native_app_key
+
 # Toss Payments
 # If omitted, the Android app falls back to Toss Payments' public docs test client key.
 TOSS_CLIENT_KEY=test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm

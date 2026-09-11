@@ -21,8 +21,8 @@ Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 �
 ## 구현 범위
 
 - `AUTH-03`: 본인 인증 완료/해제 상태와 미인증 사용자 거래 차단
-- `ITEM-01`: 위치 기반 물품 목록, 카테고리 필터, 거리/가격/신뢰 정렬
-- `ITEM-02`: 물품 등록 폼과 내 물품 목록
+- `ITEM-01`: 위치 기반 물품 목록, 실제 카카오맵 마커, 카테고리 필터, 거리/가격/신뢰 정렬
+- `ITEM-02`: 물품 등록 폼, 카카오맵 거래 위치 선택과 내 물품 목록
 - `RENT-03`: 예약 신청, 승인 대기, 대여자 승인 흐름
 - `RENT-01`: 에스크로 결제 상태 전환
 - `FR-06`: 전자 계약 생성 및 서명 상태
@@ -58,6 +58,8 @@ Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 �
 
 ## Android 앱 실행
 
+이 프로젝트의 Gradle JDK는 Java 17을 사용합니다. Android Studio의 `Settings > Build, Execution, Deployment > Build Tools > Gradle > Gradle JDK`에서 JDK 17을 선택합니다.
+
 ```powershell
 cd ShareGuardAndroid
 .\gradlew.bat assembleDebug
@@ -70,6 +72,99 @@ ShareGuardAndroid/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 Android Studio에서는 `ShareGuardAndroid` 폴더를 열고 `app` 구성을 실행하면 됩니다. 앱 안에서 `본인 인증 완료`를 누른 뒤 홈의 물품 예약, 예약 승인, 에스크로 결제, 전자 계약, QR 인증, 반납 환급 흐름을 시연할 수 있습니다.
+
+## 카카오맵 Android SDK 설정
+
+카카오맵 SDK v2를 사용하며 다음 기능이 연결되어 있습니다.
+
+- 지도 탭에서 좌표가 저장된 물품을 실제 카카오맵 마커로 표시
+- 물품 마커를 누르면 해당 물품 상세 화면으로 이동
+- `현재 위치 표시`를 눌러 지도 중심과 내 위치 마커 갱신
+- `내 위치 기준 가까운 물품`에서 현재 좌표와 물품 좌표의 실제 직선거리를 계산해 가까운 순으로 검색
+- `선택 거리 안 물품`에서 내 위치 기준 `500m`, `1km`, `3km`, `5km`, `10km`, `20km` 반경으로 마커 필터링
+- 시/군/구 또는 행정동(예: `강남구`, `역삼동`)으로 저장된 거래 주소 검색
+- 물품 등록 시 지도 중앙점 또는 현재 위치를 거래 좌표로 선택
+- 선택 좌표를 주소로 변환해 등록 화면의 `거래 위치` 입력칸에 자동 반영
+- 선택한 `latitude`, `longitude`를 Supabase `items` 테이블에 저장
+
+카카오 공식 문서:
+
+- [Kakao Maps API](https://apis.map.kakao.com/)
+- [Android SDK v2 시작하기](https://apis.map.kakao.com/android_v2/docs/getting-started/quickstart/)
+- [KakaoMap API](https://apis.map.kakao.com/android_v2/docs/api-guide/kakaomap/)
+- [Label과 LabelLayer](https://apis.map.kakao.com/android_v2/docs/api-guide/label/)
+- [CameraUpdateFactory 레퍼런스](https://apis.map.kakao.com/android_v2/reference/com/kakao/vectormap/camera/CameraUpdateFactory.html)
+- [좌표로 행정구역정보 변환](https://developers.kakao.com/docs/latest/ko/local/dev-guide#coord-to-region-code)
+- [Android 패키지명과 키 해시 설정](https://developers.kakao.com/docs/ko/android/getting-started)
+
+### 공식 문서와 구현 기준
+
+| 구현 기능 | 적용 방식 | 참고 문서 |
+| --- | --- | --- |
+| 지도 실행과 생명주기 | `MapView.start()`, `resume()`, `pause()` 사용 | [Android SDK v2 시작하기](https://apis.map.kakao.com/android_v2/docs/getting-started/quickstart/) |
+| 물품·현재 위치 마커 | `LabelLayer`에 라벨을 추가하고 검색할 때 기존 물품 라벨만 교체 | [Label과 LabelLayer](https://apis.map.kakao.com/android_v2/docs/api-guide/label/) |
+| 현재 위치·검색 위치로 이동 | `CameraUpdateFactory.newCenterPosition()`으로 중심 좌표와 줌 레벨 변경 | [CameraUpdateFactory](https://apis.map.kakao.com/android_v2/reference/com/kakao/vectormap/camera/CameraUpdateFactory.html) |
+| 지도 중앙점 선택 | 카메라 이동 종료 시점의 `cameraPosition.position`을 거래 좌표로 사용 | [KakaoMap API](https://apis.map.kakao.com/android_v2/docs/api-guide/kakaomap/) |
+| 행정동·시군구 검색 | 현재 구현은 `items.address` 문자열을 검색하며, 카카오 행정구역 코드가 필요할 때 로컬 API로 확장 가능 | [좌표로 행정구역정보 변환](https://developers.kakao.com/docs/latest/ko/local/dev-guide#coord-to-region-code) |
+
+기기 현재 위치는 카카오맵 SDK가 직접 제공하는 값이 아니므로 Android `LocationManager`로 조회합니다. 지도 선택 좌표의 주소 표시는 Android `Geocoder`를 사용하며, 기기의 주소 변환 서비스가 응답하지 않으면 `지도 선택 위치 (위도, 경도)` 형식으로 대체합니다. 관련 동작은 [Android Geocoder 공식 문서](https://developer.android.com/reference/android/location/Geocoder)를 따릅니다.
+
+### 1. 앱과 Android 플랫폼 등록
+
+1. [Kakao Developers](https://developers.kakao.com/)에 로그인하여 앱을 생성합니다.
+2. 앱 관리 화면의 `카카오맵 > 사용 설정`에서 상태를 `ON`으로 변경합니다.
+3. `앱 > 플랫폼 키 > 네이티브 앱 키`에서 Android 앱 정보를 등록합니다.
+4. 패키지명은 `com.shareguard.app`을 사용합니다.
+
+지도 초기화에는 JavaScript 키나 REST API 키가 아닌 `네이티브 앱 키`를 사용합니다. 어드민 키는 Android 앱에 넣지 않습니다.
+
+### 2. 키 해시 등록
+
+Windows에서 현재 개발자의 디버그 키 해시를 구해 네이티브 앱 키의 Android 앱 정보에 등록합니다.
+
+```powershell
+keytool -exportcert -alias androiddebugkey -keystore "$env:USERPROFILE\.android\debug.keystore" -storepass android -keypass android | openssl sha1 -binary | openssl base64
+```
+
+팀원마다 디버그 키스토어가 다를 수 있으므로 각 개발자의 키 해시를 등록합니다. Play Store 배포 시에는 릴리즈 서명 키 해시도 별도로 등록해야 합니다.
+
+### 3. 로컬 앱 키 설정
+
+`ShareGuardAndroid/local.properties`에 발급받은 네이티브 앱 키를 추가합니다.
+
+```properties
+KAKAO_NATIVE_APP_KEY=your_kakao_native_app_key
+```
+
+`local.properties`는 Git에서 제외됩니다. 실제 앱 키를 README, Kotlin 소스 또는 GitHub에 직접 기록하지 않습니다. 값을 추가한 뒤 Gradle Sync 또는 Debug 빌드를 다시 실행합니다.
+
+### 4. 현재 위치 권한
+
+`현재 위치 표시`, `내 위치 기준 가까운 물품`, `선택 거리 안 물품`을 처음 누르면 Android 위치 권한 창이 표시됩니다. `앱 사용 중에만 허용`을 선택하면 되며 정확한 위치와 대략적인 위치를 모두 지원합니다.
+
+- 위치는 버튼을 누른 시점에 한 번만 조회하며 백그라운드 위치 권한은 사용하지 않습니다.
+- 휴대폰의 위치 기능이 꺼져 있으면 기능을 켠 뒤 다시 시도합니다.
+- 권한을 다시 설정하려면 `설정 > 애플리케이션 > ShareGuard > 권한 > 위치`에서 변경합니다.
+
+### 5. 지도 검색과 거래 위치 선택
+
+홈 또는 지도 탭에서 `카카오맵 열기`를 누르면 다음 검색을 사용할 수 있습니다.
+
+1. `내 위치 기준 가까운 물품`: 현재 위치를 다시 조회하고 좌표가 있는 물품을 실제 직선거리 기준으로 정렬합니다. 마커를 누르면 계산된 거리도 함께 표시됩니다.
+2. `선택 거리 안 물품`: 반경을 선택한 뒤 누르면 해당 거리 안의 물품 마커만 표시합니다.
+3. `지역 검색`: 시/군/구 또는 행정동을 입력하면 저장된 거래 주소가 일치하는 물품만 표시합니다.
+4. `검색 초기화`: 거리·지역 필터를 해제하고 전체 물품 마커를 다시 표시합니다.
+
+물품 등록에서는 지도를 움직여 중앙 마커를 원하는 위치에 맞춘 뒤 `이 위치를 거래 장소로 선택`을 누릅니다. 선택한 위도·경도와 변환된 주소가 등록 화면에 함께 반영되며, 등록 또는 수정 시 Supabase에도 같은 값이 저장됩니다. 거리 계산과 저장 주소 검색은 앱의 물품 데이터를 대상으로 하므로 추가 카카오 REST API 키가 필요하지 않습니다.
+
+### 문제 해결
+
+- `401`: 네이티브 앱 키, `com.shareguard.app` 패키지명과 현재 서명 키 해시가 일치하는지 확인합니다.
+- `403`: 앱 관리 화면의 `카카오맵 > 사용 설정` 상태가 `ON`인지 확인합니다.
+- 지도가 비어 있음: 인터넷 연결을 확인하고 Logcat에서 `k3f`를 필터로 인증 로그를 확인합니다.
+- 내 위치를 찾지 못함: 앱 위치 권한과 휴대폰 위치 기능(GPS)이 켜져 있는지 확인합니다.
+- 선택한 주소가 좌표로 표시됨: 기기의 주소 변환 서비스가 응답하지 않은 경우입니다. 위도·경도는 정상 저장되며 네트워크 연결 후 다시 선택할 수 있습니다.
+- 물품 마커가 없음: 해당 `items` 행의 `latitude`, `longitude` 값이 `null`인지 확인합니다.
 
 ## Supabase 데이터베이스 연결
 
