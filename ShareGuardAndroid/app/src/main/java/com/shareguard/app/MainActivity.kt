@@ -244,6 +244,8 @@ class MainActivity : Activity() {
     private var currentLongitude: Double? = null
     private var selectedRegistrationLatitude: Double? = null
     private var selectedRegistrationLongitude: Double? = null
+    private var selectedRegistrationAddress: String? = null
+    private var registrationLocationInput: EditText? = null
     private var registrationCoordinateText: TextView? = null
     private var locating = false
     private var reservationStartDate: LocalDate = LocalDate.now().plusDays(1)
@@ -379,6 +381,10 @@ class MainActivity : Activity() {
                         MapActivity.EXTRA_SELECTED_LONGITUDE,
                         Double.NaN
                     ).takeUnless(Double::isNaN)
+                    selectedRegistrationAddress = data
+                        .getStringExtra(MapActivity.EXTRA_SELECTED_ADDRESS)
+                        ?.takeIf(String::isNotBlank)
+                    selectedRegistrationAddress?.let { registrationLocationInput?.setText(it) }
                     registrationCoordinateText?.text = registrationCoordinatesLabel()
                 }
                 return
@@ -1058,6 +1064,8 @@ class MainActivity : Activity() {
     private fun clearRegistrationCoordinates() {
         selectedRegistrationLatitude = null
         selectedRegistrationLongitude = null
+        selectedRegistrationAddress = null
+        registrationLocationInput = null
         registrationCoordinateText = null
     }
 
@@ -1287,7 +1295,8 @@ class MainActivity : Activity() {
         val titleInput = edit(editing?.title ?: "물품명을 입력하세요")
         val priceInput = edit(editing?.price?.toString() ?: "50000")
         val depositInput = edit(editing?.deposit?.toString() ?: "200000")
-        val locationInput = edit(editing?.location ?: "강남구 역삼동")
+        val locationInput = edit(selectedRegistrationAddress ?: editing?.location ?: "강남구 역삼동")
+        registrationLocationInput = locationInput
         val descriptionInput = edit(editing?.description ?: "구성품과 사용 상태를 자세히 적어주세요.")
         content.addView(textView(if (editing == null) "사진과 정보를 등록해요" else "물품 정보를 수정해요", 21, true, text).withTop(18))
         content.addView(textView("정확한 정보와 사진은 더 빠르고 안전한 거래로 이어집니다.", 13, false, muted).withTop(3))
@@ -1405,6 +1414,7 @@ class MainActivity : Activity() {
                         registerTab = "새 물품"
                         selectedRegistrationLatitude = item.latitude
                         selectedRegistrationLongitude = item.longitude
+                        selectedRegistrationAddress = item.location
                         render()
                     }, LinearLayout.LayoutParams(0, dp(42), 1f))
                     addView(space(8))
