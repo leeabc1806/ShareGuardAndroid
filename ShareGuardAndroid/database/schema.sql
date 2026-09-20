@@ -10,6 +10,8 @@ create table public.profiles (
     avatar_url text,
     role text not null default 'user' check (role in ('user', 'admin')),
     verified boolean not null default false,
+    verified_at timestamptz,
+    verification_provider text,
     trust_score integer not null default 500 check (trust_score between 0 and 1000),
     rating numeric(2, 1) not null default 0 check (rating between 0 and 5),
     deal_count integer not null default 0 check (deal_count >= 0),
@@ -346,6 +348,13 @@ declare
     target_reservation public.reservations;
     created_payment public.payments;
 begin
+    if not exists (
+        select 1 from public.profiles p
+        where p.id = (select auth.uid()) and p.verified
+    ) then
+        raise exception 'PASS 휴대폰 본인인증 후 결제할 수 있습니다.' using errcode = '42501';
+    end if;
+
     select * into target_reservation
     from public.reservations r
     where r.id = p_reservation_id
@@ -554,7 +563,13 @@ for select to anon, authenticated
 using (status = 'active' or owner_id = (select auth.uid()));
 create policy items_insert_own on public.items
 for insert to authenticated
-with check (owner_id = (select auth.uid()));
+with check (
+    owner_id = (select auth.uid())
+    and exists (
+        select 1 from public.profiles p
+        where p.id = (select auth.uid()) and p.verified
+    )
+);
 create policy items_update_own on public.items
 for update to authenticated
 using (owner_id = (select auth.uid()))
@@ -628,6 +643,10 @@ with check (
     payer_id = (select auth.uid())
     and provider = 'demo'
     and status = 'held'
+    and exists (
+        select 1 from public.profiles p
+        where p.id = (select auth.uid()) and p.verified
+    )
     and exists (
         select 1 from public.reservations r
         where r.id = payments.reservation_id
@@ -950,6 +969,22 @@ create table if not exists public.admin_actions (
     note text not null check (char_length(note) between 5 and 2000),
     created_at timestamptz not null default now()
 );
+
+-- Server-only audit data for PortOne/PASS verification. Raw CI/DI and phone numbers
+-- are deliberately not stored; the backend writes a one-way identity hash.
+create table private.mfa_verifications (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null unique references public.profiles(id) on delete cascade,
+    portone_verification_id text not null unique,
+    identity_hash char(64) not null unique,
+    phone_last4 char(4) not null,
+    trust_score_before integer not null check (trust_score_before between 0 and 1000),
+    trust_score_after integer not null check (trust_score_after between 0 and 1000),
+    verified_at timestamptz not null,
+    created_at timestamptz not null default now(),
+    check (trust_score_after >= trust_score_before)
+);
+revoke all on private.mfa_verifications from public, anon, authenticated;
 
 alter table public.admin_actions enable row level security;
 revoke all on public.admin_actions from anon, authenticated;

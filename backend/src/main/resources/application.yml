@@ -35,6 +35,14 @@ management:
       show-details: never
 
 shareguard:
+  portone:
+    # PortOne V2 API Secret. Never put the real value in this file or Git.
+    base-url: ${PORTONE_API_BASE_URL:https://api.portone.io}
+    api-secret: ${PORTONE_API_SECRET:}
+    store-id: ${PORTONE_STORE_ID:}
+  mfa:
+    # Matches the existing ShareGuard trust-score rule for verified identity.
+    trust-bonus: ${MFA_TRUST_BONUS:150}
   toss:
     base-url: ${TOSS_API_BASE_URL:https://api.tosspayments.com}
     secret-key: ${TOSS_SECRET_KEY:}

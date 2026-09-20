@@ -71,6 +71,7 @@ class MainActivity : Activity() {
         private const val LOCATION_PERMISSION_REQUEST = 9002
         private const val MAP_BROWSE_REQUEST = 9003
         private const val MAP_PICK_REQUEST = 9004
+        private const val MFA_VERIFICATION_REQUEST = 9005
         private const val DEFAULT_MAP_LATITUDE = 37.4979
         private const val DEFAULT_MAP_LONGITUDE = 127.0276
         private const val QR_TOKEN_TTL_MS = 5L * 60L * 1000L
@@ -379,6 +380,19 @@ class MainActivity : Activity() {
                         Double.NaN
                     ).takeUnless(Double::isNaN)
                     registrationCoordinateText?.text = registrationCoordinatesLabel()
+                }
+                return
+            }
+            MFA_VERIFICATION_REQUEST -> {
+                if (resultCode == RESULT_OK && data != null) {
+                    completeIdentityVerification(
+                        data.getIntExtra(
+                            MfaVerificationActivity.RESULT_TRUST_SCORE,
+                            currentUser().trust
+                        )
+                    )
+                } else {
+                    toast("PASS 본인인증이 완료되지 않았습니다.")
                 }
                 return
             }
@@ -795,77 +809,23 @@ class MainActivity : Activity() {
     }
 
     private fun renderVerificationPhone() {
-        content.addView(textView("안전 거래 인증을 진행해요", 26, true, text).withTop(34))
-        content.addView(textView("보증금 결제와 물품 등록은 인증 완료 후 가능합니다.", 14, false, muted).withTop(6))
-
-        val phone = edit("").apply {
-            hint = "010-1234-5678"
-            inputType = InputType.TYPE_CLASS_PHONE
-        }
-        val code = edit("").apply {
-            hint = "6자리 입력"
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        content.addView(column {
-            addView(textView("휴대폰 번호", 14, true, text))
-            addView(row {
-                addView(edit("+82").apply { isEnabled = false }, LinearLayout.LayoutParams(dp(92), dp(52)))
-                addView(space(10))
-                addView(phone, LinearLayout.LayoutParams(0, dp(52), 1f))
-            }.withTop(8))
-        }.withTop(28))
-        content.addView(column {
-            addView(textView("인증번호", 14, true, text))
-            addView(row {
-                addView(code, LinearLayout.LayoutParams(0, dp(52), 1f))
-                addView(space(10))
-                addView(button("전송") {
-                    if (phone.text.toString().filter(Char::isDigit).length < 10) {
-                        toast("휴대폰 번호를 확인하세요.")
-                    } else {
-                        verificationCodeSent = true
-                        toast("프로토타입 인증번호는 123456입니다.")
-                    }
-                }, LinearLayout.LayoutParams(dp(82), dp(52)))
-            }.withTop(8))
-        }.withTop(20))
+        content.addView(textView("PASS로 본인인증을 진행해요", 26, true, text).withTop(34))
+        content.addView(textView("포트원 인증창에서 통신사를 선택하면 설치된 PASS 앱으로 전환됩니다.", 14, false, muted).withTop(6))
         content.addView(card(Color.rgb(247, 246, 255)).apply {
-            addView(textView("다음 단계", 15, true, text))
-            addView(textView("이름과 생년월일로 거래 당사자 여부를 확인합니다.", 13, false, muted).withTop(4))
-        }.withTop(18))
-        content.addView(button("인증 계속하기") {
-            if (!verificationCodeSent || code.text.toString() != "123456") {
-                toast("전송 후 인증번호 123456을 입력하세요.")
-                return@button
-            }
-            verificationStep = VerificationStep.IDENTITY
-            render()
-        }.withTop(28))
+            addView(textView("인증 정보 보호", 15, true, text))
+            addView(textView("이름·휴대폰 번호 등의 원문은 앱이 저장하지 않으며, 서버가 포트원 결과를 다시 검증합니다.", 13, false, muted).withTop(5))
+        }.withTop(24))
+        content.addView(card(Color.rgb(234, 248, 239)).apply {
+            addView(textView("인증 완료 후 활성화", 15, true, good))
+            addView(textView("물품 등록 · 예약 · 보증금 결제 · 인증 배지", 13, false, muted).withTop(5))
+        }.withTop(12))
+        content.addView(button("PASS 본인인증 시작") { startPassVerification() }.withTop(28))
     }
 
     private fun renderVerificationIdentity() {
-        content.addView(textView("마지막 신원 정보를 확인해요", 26, true, text).withTop(34))
-        content.addView(textView("입력한 정보는 인증 상태 확인에만 사용됩니다.", 14, false, muted).withTop(6))
-        val name = edit("").apply { hint = "실명 입력" }
-        val birthDate = edit("").apply {
-            hint = "생년월일 6자리"
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        content.addView(card().apply {
-            addView(field("이름", name))
-            addView(field("생년월일", birthDate))
-        }.withTop(24))
-        content.addView(card(Color.rgb(234, 248, 239)).apply {
-            addView(textView("인증 완료 후 제공되는 기능", 15, true, good))
-            addView(textView("물품 등록 · 예약 · 보증금 결제 · 인증 배지", 13, false, muted).withTop(5))
-        }.withTop(12))
-        content.addView(button("본인 인증 완료") {
-            if (name.text.toString().trim().length < 2 || birthDate.text.toString().length != 6) {
-                toast("이름과 생년월일 6자리를 확인하세요.")
-                return@button
-            }
-            completeIdentityVerification()
-        }.withTop(28))
+        // 이전 프로토타입 화면 상태가 복원된 경우에도 가짜 입력 인증 대신 PASS 인증으로 보냅니다.
+        verificationStep = VerificationStep.PHONE
+        renderVerificationPhone()
     }
 
     private fun renderHome() {
@@ -2220,9 +2180,32 @@ class MainActivity : Activity() {
         render()
     }
 
-    private fun completeIdentityVerification() {
+    private fun startPassVerification() {
+        val token = sessionToken
+        if (token.isNullOrBlank()) {
+            toast("로그인 후 본인인증을 진행해주세요.")
+            authPanel = AuthPanel.LOGIN
+            verificationStep = VerificationStep.NONE
+            render()
+            return
+        }
+        if (BuildConfig.PORTONE_STORE_ID.isBlank() ||
+            BuildConfig.PORTONE_IDENTITY_CHANNEL_KEY.isBlank() ||
+            BuildConfig.SHAREGUARD_API_BASE_URL.isBlank()
+        ) {
+            toast("포트원 및 백엔드 연결 설정을 확인해주세요.")
+            return
+        }
+        startActivityForResult(
+            MfaVerificationActivity.intent(this, token),
+            MFA_VERIFICATION_REQUEST
+        )
+    }
+
+    private fun completeIdentityVerification(trustScore: Int) {
         val userId = sessionUserId ?: return
         currentUser().verified = true
+        currentUser().trust = trustScore
         verificationStep = VerificationStep.NONE
         verificationCodeSent = false
         getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
@@ -2232,6 +2215,23 @@ class MainActivity : Activity() {
         screen = Screen.HOME
         toast("본인 인증이 완료되었습니다. 안전 거래 기능이 활성화됐습니다.")
         render()
+    }
+
+    private fun handleMfaForbidden(error: Throwable, fallbackMessage: String) {
+        val details = error.message.orEmpty()
+        val requiresMfa = listOf(
+            "MFA_REQUIRED",
+            "PASS 휴대폰",
+            "HTTP 403",
+            "row-level security",
+            "42501"
+        ).any { marker -> details.contains(marker, ignoreCase = true) }
+        if (requiresMfa) {
+            currentUser().verified = false
+            requestIdentityVerification("물품 등록과 결제 전에 PASS 본인인증이 필요합니다.")
+        } else {
+            toast("$fallbackMessage: ${details.ifBlank { "잠시 후 다시 시도해주세요." }}")
+        }
     }
 
     private fun identityVerificationKey(userId: String): String = "identity_verified_$userId"
@@ -2560,7 +2560,7 @@ class MainActivity : Activity() {
                     toast("물품과 사진 ${photoUris.size}장이 저장되었습니다.")
                     render()
                 }.onFailure { error ->
-                    toast("등록 실패: ${error.message ?: "DB 정책을 확인하세요."}")
+                    handleMfaForbidden(error, "등록 실패")
                 }
             }
         }.start()
@@ -2782,7 +2782,7 @@ class MainActivity : Activity() {
                     loadRemoteReservations()
                     toast("토스 결제 승인과 에스크로 예치가 완료되었습니다.")
                 }.onFailure { error ->
-                    toast(error.message ?: "결제 승인에 실패했습니다.")
+                    handleMfaForbidden(error, "결제 승인 실패")
                 }
             }
         }.start()
@@ -2809,7 +2809,7 @@ class MainActivity : Activity() {
                         addNotification("🔒", "안전 결제 완료", "대여료와 보증금이 에스크로에 안전하게 보관되었습니다.", Screen.TRANSACTION)
                         loadRemoteReservations()
                         toast(successMessage)
-                    }.onFailure { error -> toast("결제 기록 실패: ${error.message ?: "예약 상태를 확인하세요."}") }
+                    }.onFailure { error -> handleMfaForbidden(error, "결제 기록 실패") }
                 }
             }.start()
             return

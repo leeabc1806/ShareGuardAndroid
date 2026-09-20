@@ -12,3 +12,10 @@ TOSS_CLIENT_KEY=test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm
 # Your backend endpoint that calls POST https://api.tosspayments.com/v1/payments/confirm.
 # Never put the Toss secret key in the Android app.
 TOSS_CONFIRM_URL=https://your-api.example.com/payments/toss/confirm
+
+# ShareGuard Spring Boot + PortOne V2 identity verification
+# Emulator -> local PC: http://10.0.2.2:8080/
+# Physical device/release builds should use an HTTPS URL.
+SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
+PORTONE_STORE_ID=store-your-portone-store-id
+PORTONE_IDENTITY_CHANNEL_KEY=channel-key-your-identity-channel

@@ -1,3 +1,5 @@
+import java.nio.file.Files
+
 plugins {
     java
     id("org.springframework.boot") version "4.1.1"
@@ -36,4 +38,23 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+// This Windows workspace can mark generated paths as read-only. A separate prerequisite
+// runs before Gradle's own stale-output cleanup, which happens before normal task actions.
+val normalizeWindowsBuildOutputs = tasks.register("normalizeWindowsBuildOutputs") {
+    doLast {
+        if (!System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) return@doLast
+        val buildOutput = layout.buildDirectory.get().asFile.toPath()
+        if (!Files.exists(buildOutput)) return@doLast
+        Files.walk(buildOutput).use { paths ->
+            paths.forEach { path ->
+                Files.setAttribute(path, "dos:readonly", false)
+            }
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name != normalizeWindowsBuildOutputs.name) dependsOn(normalizeWindowsBuildOutputs)
 }

@@ -13,18 +13,24 @@ $env:SUPABASE_DB_URL='jdbc:postgresql://aws-0-ap-northeast-2.pooler.supabase.com
 $env:SUPABASE_DB_USER='postgres.PROJECT_REF'
 $env:SUPABASE_DB_PASSWORD='your-database-password'
 $env:SUPABASE_JWKS_URI='https://PROJECT_REF.supabase.co/auth/v1/.well-known/jwks.json'
+$env:PORTONE_API_SECRET='PortOne V2 API Secret'
+$env:PORTONE_STORE_ID='store-...'
+$env:MFA_TRUST_BONUS='150'
 $env:TOSS_SECRET_KEY='test_gsk_...'
 $env:TOSS_WEBHOOK_PATH_TOKEN='32자-이상의-무작위-비밀값'
 .\gradlew.bat bootRun
 ```
 
-비밀번호와 시크릿 키는 `application.yml`, `local.properties`, Git에 저장하지 않습니다. Flyway가 시작 시 `private.payment_orders`, `private.qr_tokens`, 웹훅/감사 로그 테이블을 생성합니다. 해당 `private` 테이블은 Supabase Data API 역할(`anon`, `authenticated`)에 공개하지 않습니다.
+비밀번호와 시크릿 키는 `application.yml`, `local.properties`, Git에 저장하지 않습니다. Flyway가 시작 시 `private.payment_orders`, `private.qr_tokens`, `private.mfa_verifications`, 웹훅/감사 로그 테이블을 생성합니다. 해당 `private` 테이블은 Supabase Data API 역할(`anon`, `authenticated`)에 공개하지 않습니다.
 
 Android 에뮬레이터 설정:
 
 ```properties
 TOSS_CLIENT_KEY=test_gck_...
 TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
+SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
+PORTONE_STORE_ID=store-...
+PORTONE_IDENTITY_CHANNEL_KEY=channel-key-...
 ```
 
 ## API
@@ -33,6 +39,7 @@ TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
 
 | 메서드/경로 | 역할 |
 | --- | --- |
+| `POST /api/v1/auth/mfa/verify` | 포트원 V2 본인인증 서버 검증, 인증 상태와 신뢰 점수 반영 |
 | `POST /api/v1/payments/toss/confirm` | 예약 금액 검증 후 토스 결제 승인 |
 | `POST /api/v1/payments/{reservationId}/refund` | 완료/분쟁 거래의 실제 보증금 환급 |
 | `POST /api/v1/qr/issue` | 5분 유효 1회용 START/END QR 발급 |
@@ -40,6 +47,25 @@ TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
 | `POST /api/v1/admin/reports/{reportId}/resolve` | 관리자 분쟁 결정·제재·감사 로그 |
 | `POST /api/v1/webhooks/toss/{pathToken}` | 토스 상태 재조회 기반 웹훅 동기화 |
 | `GET /actuator/health` | 헬스 체크 |
+
+본인인증 요청 예시:
+
+```json
+{
+  "identityVerificationId": "identity-verification-앱에서-생성한-고유값"
+}
+```
+
+포트원 V2에서는 V1의 `imp_uid` 대신 `identityVerificationId`를 사용합니다. 호환을 위해 `imp_uid` 별칭도 역직렬화하지만, 서버는 어떤 경우에도 앱의 성공 콜백만 신뢰하지 않고 `GET https://api.portone.io/identity-verifications/{identityVerificationId}` 결과가 `VERIFIED`인지 확인합니다. 성공 시 `profiles.verified`, `verified_at`, `verification_provider`, `trust_score`를 한 트랜잭션에서 변경합니다. 기본 인증 가산점은 기존 신뢰 지수 규칙과 같은 150점이며 `MFA_TRUST_BONUS`로 조정할 수 있습니다.
+
+`POST /api/v1/items`와 `POST /api/v1/payments/**`는 인증 전이면 다음과 같이 `403 Forbidden`을 반환합니다.
+
+```json
+{
+  "code": "MFA_REQUIRED",
+  "message": "PASS 휴대폰 본인인증 후 이용할 수 있습니다."
+}
+```
 
 결제 승인 요청 예시:
 

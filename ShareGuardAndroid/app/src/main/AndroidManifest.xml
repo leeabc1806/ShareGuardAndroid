@@ -8,6 +8,25 @@
         android:name="android.hardware.location"
         android:required="false" />
 
+    <!-- Android 11+ package visibility for PASS app-to-app authentication. -->
+    <queries>
+        <package android:name="com.sktelecom.tauth" />
+        <package android:name="com.kt.ktauth" />
+        <package android:name="com.lguplus.smartotp" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tauthlink" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="ktauthexternalcall" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upluscorporation" />
+        </intent>
+    </queries>
+
     <application
         android:name=".ShareGuardApplication"
         android:allowBackup="true"
@@ -31,6 +50,20 @@
         <activity
             android:name=".TossPaymentActivity"
             android:exported="false" />
+        <activity
+            android:name=".MfaVerificationActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <!-- External PASS/PG pages may return here. The backend still verifies the ID. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="shareguard"
+                    android:host="mfa-complete" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".MainActivity"
             android:exported="true">

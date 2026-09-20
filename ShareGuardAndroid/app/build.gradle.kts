@@ -46,6 +46,9 @@ android {
         buildConfigField("String", "KAKAO_NATIVE_APP_KEY", buildConfigString("KAKAO_NATIVE_APP_KEY"))
         buildConfigField("String", "TOSS_CLIENT_KEY", buildConfigString("TOSS_CLIENT_KEY"))
         buildConfigField("String", "TOSS_CONFIRM_URL", buildConfigString("TOSS_CONFIRM_URL"))
+        buildConfigField("String", "SHAREGUARD_API_BASE_URL", buildConfigString("SHAREGUARD_API_BASE_URL"))
+        buildConfigField("String", "PORTONE_STORE_ID", buildConfigString("PORTONE_STORE_ID"))
+        buildConfigField("String", "PORTONE_IDENTITY_CHANNEL_KEY", buildConfigString("PORTONE_IDENTITY_CHANNEL_KEY"))
     }
 }
 
@@ -54,6 +57,10 @@ dependencies {
     implementation("com.kakao.maps.open:android:2.15.1")
     implementation("com.github.tosspayments:payment-sdk-android:0.1.22")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.6.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
+    implementation("com.squareup.retrofit2:retrofit:2.11.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.11.0")
 }
 
 // Some Windows workspace folders mark generated directories as read-only.

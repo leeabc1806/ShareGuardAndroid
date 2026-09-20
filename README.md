@@ -49,7 +49,7 @@ Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 �
 
 ## 데모 흐름
 
-1. 상단 알림에서 `본인 인증 완료`를 누릅니다.
+1. 로그인 후 `PASS 본인인증 시작`을 눌러 포트원 테스트 인증을 완료합니다.
 2. 홈에서 물품을 선택하고 `예약 신청`을 누릅니다.
 3. 예약 화면에서 `예약 승인` -> `에스크로 결제` -> `전자 계약 서명`을 차례로 누릅니다.
 4. QR 화면에서 대여 전 사진 업로드, `START 인증`, 반납 후 사진 업로드, `END 인증`을 진행합니다.
@@ -72,7 +72,38 @@ cd ShareGuardAndroid
 ShareGuardAndroid/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Android Studio에서는 `ShareGuardAndroid` 폴더를 열고 `app` 구성을 실행하면 됩니다. 앱 안에서 `본인 인증 완료`를 누른 뒤 홈의 물품 예약, 예약 승인, 에스크로 결제, 전자 계약, QR 인증, 반납 환급 흐름을 시연할 수 있습니다.
+Android Studio에서는 `ShareGuardAndroid` 폴더를 열고 `app` 구성을 실행하면 됩니다. 로그인과 PASS 본인인증을 마친 뒤 홈의 물품 예약, 예약 승인, 에스크로 결제, 전자 계약, QR 인증, 반납 환급 흐름을 시연할 수 있습니다.
+
+## PASS 휴대폰 본인인증 (PortOne V2)
+
+현재 구현은 포트원 V2 본인인증을 사용합니다. V2의 서버 검증 식별자는 V1의 `imp_uid`가 아니라 `identityVerificationId`입니다. 백엔드는 이전 앱 마이그레이션을 위해 `imp_uid` JSON 별칭도 받지만, 이를 V2 조회 API의 식별자로만 사용하며 클라이언트 콜백 자체를 인증 성공으로 신뢰하지 않습니다.
+
+포트원 콘솔에서 테스트 스토어와 본인인증 채널을 만든 뒤 Android의 `local.properties`에 다음 값을 넣습니다.
+
+```properties
+SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
+PORTONE_STORE_ID=store-...
+PORTONE_IDENTITY_CHANNEL_KEY=channel-key-...
+```
+
+백엔드는 Android에 넣으면 안 되는 API Secret을 환경변수로 받습니다.
+
+```powershell
+$env:PORTONE_API_SECRET='PortOne V2 API Secret'
+$env:PORTONE_STORE_ID='store-...'
+$env:MFA_TRUST_BONUS='150'
+```
+
+인증 흐름은 `Android WebView -> PASS 앱 -> shareguard://mfa-complete -> POST /api/v1/auth/mfa/verify -> PortOne V2 서버 조회 -> profiles 업데이트` 순서입니다. 인증 원문 CI/DI와 전체 전화번호는 저장하지 않고, 계정 중복 가입 방지용 SHA-256 지문과 전화번호 마지막 4자리만 `private.mfa_verifications`에 보관합니다.
+
+에뮬레이터에는 실제 PASS 앱을 정상 설치·가입하기 어려우므로 WebView와 서버 오류 흐름까지만 확인하고, PASS 앱 전환과 최종 인증은 통신사 SIM이 있는 실제 Android 기기에서 테스트하는 것이 안전합니다. 로컬 PC 백엔드는 에뮬레이터에서 `10.0.2.2`, 실제 기기에서는 PC의 같은 Wi-Fi 사설 IP 또는 HTTPS 개발 서버 주소를 사용합니다.
+
+기존 Supabase 프로젝트에는 다음 중 하나로 DB 변경을 적용해야 합니다.
+
+- Spring Boot가 같은 PostgreSQL에 연결된 경우 서버 시작 시 Flyway `V2__portone_mfa.sql` 적용
+- Supabase SQL Editor에서 최신 `ShareGuardAndroid/database/schema.sql` 검토 후 적용
+
+물품 등록은 Android가 Supabase Data API에 직접 쓰므로 `items_insert_own` RLS도 MFA를 검사합니다. 결제 API는 Spring Security 필터가, 데모 결제 RPC는 PostgreSQL 함수와 RLS가 각각 미인증 사용자를 차단합니다. 앱은 `MFA_REQUIRED`, HTTP 403 또는 RLS 권한 오류를 받으면 PASS 인증 화면으로 유도합니다.
 
 ## 카카오맵 Android SDK 설정
 

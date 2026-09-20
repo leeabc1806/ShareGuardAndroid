@@ -79,6 +79,11 @@ class MapActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = Color.rgb(244, 247, 250)
 
+        if (!ShareGuardApplication.supportsKakaoMaps()) {
+            showUnsupportedDeviceMessage()
+            return
+        }
+
         if (BuildConfig.KAKAO_NATIVE_APP_KEY.isBlank()) {
             showMissingKeyMessage()
             return
@@ -527,6 +532,20 @@ class MapActivity : Activity() {
                 "ShareGuardAndroid/local.properties에\n" +
                 "KAKAO_NATIVE_APP_KEY=발급받은_네이티브_앱_키\n" +
                 "형식으로 추가한 뒤 앱을 다시 빌드하세요.",
+            16,
+            true
+        ).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            setBackgroundColor(Color.rgb(244, 247, 250))
+        })
+    }
+
+    private fun showUnsupportedDeviceMessage() {
+        setContentView(label(
+            "현재 에뮬레이터는 x86 계열이라 카카오맵을 실행할 수 없습니다.\n\n" +
+                "카카오맵 SDK는 arm64-v8a와 armeabi-v7a 기기를 지원합니다.\n" +
+                "실제 Android 휴대폰 또는 ARM64 에뮬레이터에서 확인해주세요.",
             16,
             true
         ).apply {
