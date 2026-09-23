@@ -19,6 +19,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.util.Base64
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -45,6 +46,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.integration.android.IntentIntegrator
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.NumberFormat
@@ -57,6 +59,8 @@ import kotlin.math.roundToInt
 class MainActivity : Activity() {
     companion object {
         private const val SESSION_PREFS = "shareguard_session"
+        private const val OAUTH_REDIRECT_URI = "shareguard://auth/callback"
+        private const val OAUTH_CODE_VERIFIER = "oauth_code_verifier"
         private const val INACTIVITY_DAYS = 14L
         private const val INACTIVITY_TIMEOUT_MS = INACTIVITY_DAYS * 24L * 60L * 60L * 1000L
         private const val KEY_ACCESS_TOKEN = "access_token"
@@ -340,11 +344,19 @@ class MainActivity : Activity() {
         buildShell()
         render()
         sessionNotice?.let(::toast)
-        if (!sessionToken.isNullOrBlank() && !preferences.getString(KEY_REFRESH_TOKEN, null).isNullOrBlank()) {
+        if (handleGoogleAuthCallback(intent)) {
+            return
+        } else if (!sessionToken.isNullOrBlank() && !preferences.getString(KEY_REFRESH_TOKEN, null).isNullOrBlank()) {
             refreshPersistedSession()
         } else {
             loadRemoteItems()
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleGoogleAuthCallback(intent)
     }
 
     override fun onStop() {
@@ -758,6 +770,9 @@ class MainActivity : Activity() {
             addView(button(if (createAccount) "회원가입" else "로그인") {
                 authenticate(email.text.toString(), password.text.toString(), createAccount)
             }.withTop(16))
+        }.withTop(12))
+        content.addView(button("Google 계정으로 로그인", secondary = true) {
+            startGoogleSignIn()
         }.withTop(12))
     }
 
@@ -2168,6 +2183,68 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun startGoogleSignIn() {
+        if (!supabase.isConfigured) {
+            toast("Supabase 연결 정보를 먼저 설정해주세요.")
+            return
+        }
+        val verifierBytes = ByteArray(32).also(SecureRandom()::nextBytes)
+        val verifier = Base64.encodeToString(
+            verifierBytes,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        val challenge = Base64.encodeToString(
+            MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
+            .edit()
+            .putString(OAUTH_CODE_VERIFIER, verifier)
+            .apply()
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(supabase.googleSignInUrl(OAUTH_REDIRECT_URI, challenge))))
+    }
+
+    private fun handleGoogleAuthCallback(callbackIntent: Intent?): Boolean {
+        val uri = callbackIntent?.data ?: return false
+        if (uri.scheme != "shareguard" || uri.host != "auth" || uri.path != "/callback") return false
+
+        val error = uri.getQueryParameter("error_description") ?: uri.getQueryParameter("error")
+        if (!error.isNullOrBlank()) {
+            toast("Google 로그인 실패: $error")
+            return true
+        }
+
+        val preferences = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
+        val code = uri.getQueryParameter("code")
+        val verifier = preferences.getString(OAUTH_CODE_VERIFIER, null)
+        preferences.edit().remove(OAUTH_CODE_VERIFIER).apply()
+        if (code.isNullOrBlank() || verifier.isNullOrBlank()) {
+            toast("Google 로그인 정보를 확인할 수 없습니다. 다시 시도해주세요.")
+            return true
+        }
+
+        toast("Google 로그인 확인 중입니다.")
+        Thread {
+            val result = runCatching { supabase.exchangeCodeForSession(code, verifier) }
+            runOnUiThread {
+                result.onSuccess { auth ->
+                    if (auth.isSignedIn && persistAuthenticatedSession(auth)) {
+                        val userId = sessionUserId ?: return@onSuccess
+                        authPanel = AuthPanel.CLOSED
+                        currentUser().verified = preferences.getBoolean(identityVerificationKey(userId), false)
+                        verificationStep = if (currentUser().verified) VerificationStep.NONE else VerificationStep.CONSENT
+                        loadRemoteItems()
+                    }
+                    toast(auth.message)
+                    render()
+                }.onFailure { callbackError ->
+                    toast(callbackError.message ?: "Google 로그인에 실패했습니다.")
+                }
+            }
+        }.start()
+        return true
     }
 
     private fun signOut() {

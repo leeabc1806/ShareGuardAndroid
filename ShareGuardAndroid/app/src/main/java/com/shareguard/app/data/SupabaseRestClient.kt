@@ -1,5 +1,6 @@
 package com.shareguard.app.data
 
+import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -97,6 +98,23 @@ class SupabaseRestClient(
             .put("password", password)
             .put("data", JSONObject().put("display_name", displayName.trim()))
         return parseAuth(request("/auth/v1/signup", "POST", body))
+    }
+
+    fun googleSignInUrl(redirectUri: String, codeChallenge: String): String =
+        Uri.parse(baseUrl.trimEnd('/') + "/auth/v1/authorize")
+            .buildUpon()
+            .appendQueryParameter("provider", "google")
+            .appendQueryParameter("redirect_to", redirectUri)
+            .appendQueryParameter("code_challenge", codeChallenge)
+            .appendQueryParameter("code_challenge_method", "s256")
+            .build()
+            .toString()
+
+    fun exchangeCodeForSession(code: String, codeVerifier: String): AuthResult {
+        val body = JSONObject()
+            .put("auth_code", code)
+            .put("code_verifier", codeVerifier)
+        return parseAuth(request("/auth/v1/token?grant_type=pkce", "POST", body))
     }
 
     fun refreshSession(refreshToken: String): AuthResult {

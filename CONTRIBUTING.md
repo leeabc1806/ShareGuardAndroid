@@ -63,6 +63,9 @@ C:\Projects\ShareGuardAndroid\ShareGuardAndroid
 sdk.dir=C\:\\Users\\WINDOWS_USER\\AppData\\Local\\Android\\Sdk
 SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_YOUR_KEY
+PORTONE_STORE_ID=store-YOUR_STORE_ID
+PORTONE_IDENTITY_CHANNEL_KEY=channel-key-YOUR_PASS_CHANNEL_KEY
+SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
 ```
 
 키 이름 앞에 `NEXT_PUBLIC_`을 붙이지 않습니다. Android 앱이 읽는 정확한 이름은 다음 두 개입니다.
@@ -73,6 +76,8 @@ SUPABASE_PUBLISHABLE_KEY
 ```
 
 `sb_secret_...` 또는 `service_role` 키는 앱, 문서, GitHub에 절대 넣지 않습니다. Supabase 관리자 화면이 필요한 팀원은 프로젝트 소유자가 Supabase Dashboard에서도 별도로 초대합니다.
+
+Google 로그인과 PASS 본인인증을 작업하거나 테스트하는 팀원은 [로그인 및 PASS 설정 가이드](./AUTH_SETUP.md)를 먼저 확인합니다. `PORTONE_API_SECRET`은 `local.properties`가 아니라 Spring Boot 서버 환경 변수에만 등록합니다.
 
 현재 팀의 Supabase 프로젝트를 함께 사용한다면 `database/schema.sql`을 다시 실행하지 않습니다. 새 Supabase 프로젝트를 만드는 담당자만 [데이터베이스 설정 문서](./ShareGuardAndroid/database/README.md)를 따라 스키마를 한 번 실행합니다.
 
