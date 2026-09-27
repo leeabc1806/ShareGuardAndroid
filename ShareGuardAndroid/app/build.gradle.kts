@@ -15,10 +15,14 @@ val localProperties = Properties().apply {
 }
 
 fun buildConfigString(name: String): String {
-    val value = localProperties.getProperty(name, "")
+    // One base address is sufficient for MFA, QR, approval and refund APIs.
+    val apiBase = localProperties.getProperty("SHAREGUARD_API_BASE_URL", "").trim().trimEnd('/')
+    val default = if (name == "TOSS_CONFIRM_URL" && apiBase.isNotEmpty()) "$apiBase/api/v1/payments/toss/confirm" else ""
+    val value = localProperties.getProperty(name)?.takeIf { it.isNotBlank() } ?: default
+    val escaped = value
         .replace("\\", "\\\\")
         .replace("\"", "\\\"")
-    return "\"$value\""
+    return "\"$escaped\""
 }
 
 android {
@@ -57,6 +61,9 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     implementation("androidx.appcompat:appcompat:1.5.0")
     implementation("com.kakao.maps.open:android:2.15.1")
     implementation("com.github.tosspayments:payment-sdk-android:0.1.22")

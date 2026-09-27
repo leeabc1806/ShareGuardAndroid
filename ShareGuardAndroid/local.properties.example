@@ -9,13 +9,14 @@ KAKAO_NATIVE_APP_KEY=your_kakao_native_app_key
 # If omitted, the Android app falls back to Toss Payments' public docs test client key.
 TOSS_CLIENT_KEY=test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm
 
-# Your backend endpoint that calls POST https://api.tosspayments.com/v1/payments/confirm.
+# Optional override. When empty, derive /api/v1/payments/toss/confirm from the base URL below.
 # Never put the Toss secret key in the Android app.
-TOSS_CONFIRM_URL=https://your-api.example.com/payments/toss/confirm
+TOSS_CONFIRM_URL=
 
 # ShareGuard Spring Boot + PortOne V2 identity verification
-# Emulator -> local PC: http://10.0.2.2:8080/
-# Physical device/release builds should use an HTTPS URL.
-SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
+# Physical phone: use your backend HTTPS URL, or the PC's LAN IP for a debug build.
+# Run ../tools/Configure-DeviceServer.ps1 -BaseUrl http://YOUR_PC_IP:8080/
+# Emulator only: http://10.0.2.2:8080/ ; USB adb reverse: http://127.0.0.1:8080/
+SHAREGUARD_API_BASE_URL=https://your-api.example.com/
 PORTONE_STORE_ID=store-your-portone-store-id
 PORTONE_IDENTITY_CHANNEL_KEY=channel-key-your-identity-channel

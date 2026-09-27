@@ -1,5 +1,7 @@
 # ShareGuard MVP
 
+교수님 지도사항 2~5의 수정 내용, 실기기 실행과 검증 절차는 [연동 수정 안내](./docs/교수님_지도사항_반영.md)를 참고하세요.
+
 `ShareGuard_통합문서.pdf`의 SRS/SDD/API 명세를 기준으로 만든 실행 가능한 웹 프로토타입입니다. 별도 서버 없이 [index.html](./index.html)을 브라우저에서 열면 동작합니다.
 
 Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 추가했습니다. Kotlin + Android 기본 View로 구현되어 외부 UI 라이브러리 없이 빌드됩니다. 민감한 결제·QR·관리자 처리를 담당하는 [Spring Boot 백엔드](./backend/README.md)도 포함합니다.

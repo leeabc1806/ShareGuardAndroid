@@ -6,6 +6,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -134,9 +135,16 @@ public class PaymentTransactionService {
             return;
         }
         if (!providerStatus.equals("CANCELED") && !providerStatus.equals("PARTIAL_CANCELED")) return;
-        int canceled = 0;
-        for (JsonNode cancel : providerPayload.path("cancels")) canceled += cancel.path("cancelAmount").asInt(0);
-        canceled = Math.min(canceled, order.expectedAmount());
+        if (!order.orderId().equals(providerPayload.path("orderId").asText())
+            || order.expectedAmount() != providerPayload.path("totalAmount").asInt(-1)) {
+            throw new ApiException(502, "결제사의 주문 정보가 일치하지 않습니다.");
+        }
+        long canceledTotal = 0;
+        for (JsonNode cancel : providerPayload.path("cancels")) {
+            if ("DONE".equals(cancel.path("cancelStatus").asText())) canceledTotal += cancel.path("cancelAmount").asLong(0);
+        }
+        if (canceledTotal <= 0 || canceledTotal < order.refundedAmount() || canceledTotal > order.expectedAmount()) return;
+        int canceled = (int) canceledTotal;
         Integer deposit = jdbc.queryForObject("select deposit from public.reservations where id = ?", Integer.class, order.reservationId());
         String status = canceled >= (deposit == null ? order.expectedAmount() : deposit) ? "refunded" : "partially_refunded";
         jdbc.update("""
@@ -161,6 +169,11 @@ public class PaymentTransactionService {
 
     @Transactional
     public PreparedRefund prepareRefund(UUID actorId, UUID reservationId, int amount) {
+        var state = state(actorId, reservationId);
+        if (!state.refundAllowed()) throw new ApiException(409, "보증금 환급 가능 상태가 아닙니다. 분쟁 및 처리 상태를 확인하세요.");
+        if (amount <= 0 || amount > state.refundableAmount()) throw new ApiException(400, "환급 가능 금액을 초과했습니다.");
+        // Serialize against open_rental_dispute, which locks the reservation first.
+        jdbc.queryForObject("select id from public.reservations where id = ? for update", UUID.class, reservationId);
         RefundRow result;
         try {
             result = jdbc.queryForObject("""
@@ -178,14 +191,19 @@ public class PaymentTransactionService {
             """, (rs, ignored) -> new RefundRow(new PreparedRefund(
                 rs.getObject("id", UUID.class), rs.getObject("reservation_id", UUID.class),
                 rs.getObject("payer_id", UUID.class), rs.getString("order_id"), rs.getString("payment_key"),
-                rs.getInt("approved_amount"), rs.getInt("refunded_amount"), rs.getInt("deposit"), UUID.randomUUID()
+                rs.getInt("approved_amount"), rs.getInt("refunded_amount"), rs.getInt("deposit"),
+                refundKey(rs.getObject("id", UUID.class), rs.getInt("refunded_amount"), amount)
             ), rs.getBoolean("allowed"), rs.getString("contract_status")), actorId, actorId, actorId, reservationId);
         } catch (EmptyResultDataAccessException exception) {
             throw new ApiException(404, "결제 주문을 찾을 수 없습니다.");
         }
         var row = result.refund();
         if (!result.allowed()) throw new ApiException(403, "환급 요청 권한이 없습니다.");
-        if (!List.of("completed", "disputed").contains(result.contractStatus())) throw new ApiException(409, "반납 완료 또는 분쟁 상태에서만 환급할 수 있습니다.");
+        if (!"completed".equals(result.contractStatus())) throw new ApiException(409, "반납 확인 및 분쟁 처리 후에만 환급할 수 있습니다.");
+        state = state(actorId, reservationId);
+        if (!state.refundAllowed() || amount > state.refundableAmount()) {
+            throw new ApiException(409, "환급 조건이 변경되었습니다. 결제 상태를 다시 확인하세요.");
+        }
         int refundable = row.depositAmount() - row.refundedAmount();
         if (amount > refundable) throw new ApiException(400, "환급액이 남은 보증금보다 큽니다.");
         int updated = jdbc.update("""
@@ -196,15 +214,54 @@ public class PaymentTransactionService {
         return row;
     }
 
+    static UUID refundKey(UUID orderId, int alreadyRefunded, int amount) {
+        // A timed-out retry of the same refund must reuse the provider idempotency key.
+        return UUID.nameUUIDFromBytes((orderId + ":" + alreadyRefunded + ":" + amount).getBytes(StandardCharsets.UTF_8));
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentDtos.PaymentStateResponse state(UUID actorId, UUID reservationId) {
+        try {
+            return jdbc.queryForObject("""
+                select r.id, r.deposit, c.status as contract_status,
+                       coalesce(po.status, 'unpaid') as payment_status,
+                       coalesce(po.approved_amount, 0) as approved_amount,
+                       coalesce(po.refunded_amount, 0) as refunded_amount,
+                       exists(select 1 from public.reports rp where rp.reservation_id = r.id
+                              and rp.status in ('open', 'reviewing')) as disputed,
+                       least(r.deposit, coalesce((select sum(a.deduction_amount) from public.admin_actions a
+                                 join public.reports rp on rp.id = a.report_id
+                                 where rp.reservation_id = r.id), 0)) as deduction
+                  from public.reservations r
+                  join public.items i on i.id = r.item_id
+                  left join public.rental_contracts c on c.reservation_id = r.id
+                  left join private.payment_orders po on po.reservation_id = r.id
+                 where r.id = ? and (r.borrower_id = ? or i.owner_id = ? or
+                       exists(select 1 from public.profiles p where p.id = ? and p.role = 'admin'))
+                """, (rs, ignored) -> {
+                    String status = rs.getString("payment_status");
+                    int remaining = Math.max(0, rs.getInt("deposit") - rs.getInt("deduction") - rs.getInt("refunded_amount"));
+                    boolean allowed = "completed".equals(rs.getString("contract_status")) && !rs.getBoolean("disputed")
+                        && List.of("paid", "partially_refunded").contains(status) && remaining > 0;
+                    return new PaymentDtos.PaymentStateResponse(reservationId, status, rs.getInt("approved_amount"),
+                        rs.getInt("refunded_amount"), remaining, allowed);
+                }, reservationId, actorId, actorId, actorId);
+        } catch (EmptyResultDataAccessException exception) {
+            throw new ApiException(404, "결제 정보를 조회할 수 없습니다.");
+        }
+    }
+
     @Transactional
     public PaymentDtos.PaymentResponse completeRefund(PreparedRefund refund, int amount, JsonNode payload, UUID actorId) {
         int totalRefunded = refund.refundedAmount() + amount;
         String status = totalRefunded >= refund.depositAmount() ? "refunded" : "partially_refunded";
-        jdbc.update("""
+        int updated = jdbc.update("""
             update private.payment_orders set status = ?, refunded_amount = ?, provider_payload = ?::jsonb,
                    refunded_at = now(), updated_at = now(), version = version + 1
-             where id = ? and status = 'refund_pending'
-            """, status, totalRefunded, payload.toString(), refund.id());
+             where id = ? and status in ('refund_pending', 'partially_refunded', 'refunded')
+               and refunded_amount <= ?
+            """, status, totalRefunded, payload.toString(), refund.id(), totalRefunded);
+        if (updated != 1) throw new ApiException(409, "환급 상태가 변경되었습니다. 다시 조회해주세요.");
         jdbc.update("""
             update public.payments set status = ?, refunded_at = now(), updated_at = now()
              where reservation_id = ?

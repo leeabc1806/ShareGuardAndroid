@@ -5,6 +5,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
+
+data class RemoteProfile(
+    val id: String, val displayName: String, val role: String, val verified: Boolean,
+    val trustScore: Int, val rating: Double, val dealCount: Int
+)
+data class RemoteReview(val rating: Int, val content: String, val createdAt: String)
 
 data class AuthResult(
     val accessToken: String? = null,
@@ -26,7 +33,8 @@ data class RemoteItem(
     val deposit: Int,
     val address: String,
     val latitude: Double?,
-    val longitude: Double?
+    val longitude: Double?,
+    val status: String = "active"
 )
 
 data class NewRemoteItem(
@@ -126,10 +134,51 @@ class SupabaseRestClient(
         request("/auth/v1/logout", "POST", JSONObject(), accessToken)
     }
 
-    fun fetchItems(accessToken: String? = null): List<RemoteItem> {
+    fun fetchCurrentProfile(accessToken: String): RemoteProfile {
+        val auth = request("/auth/v1/user", "GET", accessToken = accessToken)
+        check(auth.isSuccessful) { auth.errorMessage() }
+        val userId = JSONObject(auth.body).getString("id")
+        return fetchProfiles(listOf(userId), accessToken).singleOrNull()
+            ?: error("사용자 프로필을 찾을 수 없습니다. DB 마이그레이션을 확인해주세요.")
+    }
+
+    fun fetchProfiles(ids: List<String>, accessToken: String? = null): List<RemoteProfile> {
+        if (ids.isEmpty()) return emptyList()
+        ids.forEach { UUID.fromString(it) }
+        return ids.distinct().chunked(50).flatMap { group ->
+            val response = request("/rest/v1/profiles?select=id,display_name,role,verified,trust_score,rating,deal_count&id=in.(${group.joinToString(",")})",
+                "GET", accessToken = accessToken)
+            check(response.isSuccessful) { response.errorMessage() }
+            val rows = JSONArray(response.body)
+            (0 until rows.length()).map { index ->
+                val row = rows.getJSONObject(index)
+                RemoteProfile(row.getString("id"), row.getString("display_name"), row.getString("role"),
+                    row.getBoolean("verified"), row.getInt("trust_score"), row.getDouble("rating"), row.getInt("deal_count"))
+            }
+        }
+    }
+
+    fun fetchProfileReviews(userId: String, accessToken: String): List<RemoteReview> {
+        UUID.fromString(userId)
+        val response = request("/rest/v1/reviews?select=rating,content,created_at&reviewee_id=eq.$userId&order=created_at.desc&limit=10",
+            "GET", accessToken = accessToken)
+        check(response.isSuccessful) { response.errorMessage() }
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { i -> rows.getJSONObject(i).let {
+            RemoteReview(it.getInt("rating"), it.optString("content"), it.getString("created_at"))
+        } }
+    }
+
+    fun fetchItems(accessToken: String? = null, itemIds: List<String>? = null): List<RemoteItem> {
+        if (itemIds != null) {
+            if (itemIds.isEmpty()) return emptyList()
+            itemIds.forEach { UUID.fromString(it) }
+            if (itemIds.size > 50) return itemIds.distinct().chunked(50).flatMap { fetchItems(accessToken, it) }
+        }
+        val filter = if (itemIds == null) "&status=eq.active" else "&id=in.(${itemIds.distinct().joinToString(",")})"
         val response = request(
-            "/rest/v1/items?select=id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude" +
-                "&status=eq.active&order=created_at.desc",
+            "/rest/v1/items?select=id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude,status" +
+                "$filter&order=created_at.desc",
             "GET",
             accessToken = accessToken
         )
@@ -148,7 +197,8 @@ class SupabaseRestClient(
                 deposit = row.getInt("deposit"),
                 address = row.optString("address", "거래 위치 협의"),
                 latitude = row.optNullableDouble("latitude"),
-                longitude = row.optNullableDouble("longitude")
+                longitude = row.optNullableDouble("longitude"),
+                status = row.getString("status")
             )
         }
     }
@@ -367,21 +417,8 @@ class SupabaseRestClient(
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
     }
 
-    fun payDemoReservation(reservationId: String, accessToken: String) {
-        rpc("pay_demo_reservation", JSONObject().put("p_reservation_id", reservationId), accessToken)
-    }
-
     fun signContract(contractId: String, accessToken: String): RemoteContract {
         val response = rpc("sign_rental_contract", JSONObject().put("p_contract_id", contractId), accessToken)
-        return JSONObject(response.body).toRemoteContract()
-    }
-
-    fun verifyRental(contractId: String, action: String, accessToken: String): RemoteContract {
-        val response = rpc(
-            "verify_rental_transition",
-            JSONObject().put("p_contract_id", contractId).put("p_action", action),
-            accessToken
-        )
         return JSONObject(response.body).toRemoteContract()
     }
 
@@ -533,30 +570,6 @@ class SupabaseRestClient(
                 status = row.optString("status", "open")
             )
         }
-    }
-
-    fun resolveReport(
-        reportId: String,
-        decision: String,
-        deductionAmount: Int,
-        note: String,
-        sanction: String,
-        accessToken: String
-    ) {
-        require(decision in setOf("dismissed", "partial", "uphold")) { "처리 결정이 올바르지 않습니다." }
-        require(deductionAmount >= 0) { "차감액은 0 이상이어야 합니다." }
-        val response = request(
-            "/rest/v1/rpc/resolve_report_admin",
-            "POST",
-            JSONObject()
-                .put("p_report_id", reportId)
-                .put("p_decision", decision)
-                .put("p_deduction_amount", deductionAmount)
-                .put("p_note", note)
-                .put("p_sanction", sanction),
-            accessToken
-        )
-        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
     }
 
     private fun rpc(name: String, body: JSONObject, accessToken: String): HttpResponse {

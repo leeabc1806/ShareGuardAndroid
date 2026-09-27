@@ -4,6 +4,7 @@ import com.shareguard.backend.common.ApiException;
 import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -30,7 +31,8 @@ public class QrTokenService {
 
         var secret = new byte[32];
         random.nextBytes(secret);
-        var expiresAt = Instant.now().plusSeconds(ttlSeconds);
+        // The QR wire format stores epoch seconds; persist exactly the same precision.
+        var expiresAt = Instant.now().plusSeconds(ttlSeconds).truncatedTo(ChronoUnit.SECONDS);
         jdbc.update("""
             insert into private.qr_tokens(contract_id, action, token_hash, issued_by, expires_at)
             values (?, ?, ?, ?, ?)
@@ -41,7 +43,10 @@ public class QrTokenService {
     @Transactional
     public QrDtos.VerifyResponse verify(UUID actorId, QrDtos.VerifyRequest request) {
         var decoded = QrTokenCodec.decode(request.payload());
-        if (decoded.expiresAt().isBefore(Instant.now())) throw new ApiException(410, "만료된 QR입니다.");
+        if (!decoded.contractId().equals(request.contractId()) || !decoded.action().equals(request.action())) {
+            throw new ApiException(400, "선택한 계약 또는 거래 단계와 다른 QR입니다.");
+        }
+        if (!decoded.expiresAt().isAfter(Instant.now())) throw new ApiException(410, "만료된 QR입니다.");
 
         TokenRow token;
         try {
@@ -61,7 +66,7 @@ public class QrTokenService {
         if (!token.contractId().equals(decoded.contractId()) || !token.action().equals(decoded.action())
             || !token.expiresAt().equals(decoded.expiresAt())) throw new ApiException(400, "QR 내용이 변조되었습니다.");
         if (token.usedAt() != null) throw new ApiException(409, "이미 사용된 QR입니다.");
-        if (token.expiresAt().isBefore(Instant.now())) throw new ApiException(410, "만료된 QR입니다.");
+        if (!token.expiresAt().isAfter(Instant.now())) throw new ApiException(410, "만료된 QR입니다.");
         if (token.issuedBy().equals(actorId)) throw new ApiException(403, "QR 발급자는 자신의 QR을 인증할 수 없습니다.");
 
         var contract = contractForUpdate(token.contractId());

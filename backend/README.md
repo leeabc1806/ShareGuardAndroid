@@ -23,12 +23,12 @@ $env:TOSS_WEBHOOK_PATH_TOKEN='32자-이상의-무작위-비밀값'
 
 비밀번호와 시크릿 키는 `application.yml`, `local.properties`, Git에 저장하지 않습니다. Flyway가 시작 시 `private.payment_orders`, `private.qr_tokens`, `private.mfa_verifications`, 웹훅/감사 로그 테이블을 생성합니다. 해당 `private` 테이블은 Supabase Data API 역할(`anon`, `authenticated`)에 공개하지 않습니다.
 
-Android 에뮬레이터 설정:
+Android 실기기 디버그 설정(PC의 실제 LAN IP로 변경):
 
 ```properties
 TOSS_CLIENT_KEY=test_gck_...
-TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
-SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
+TOSS_CONFIRM_URL=
+SHAREGUARD_API_BASE_URL=http://192.168.0.12:8080/
 PORTONE_STORE_ID=store-...
 PORTONE_IDENTITY_CHANNEL_KEY=channel-key-...
 ```
@@ -41,12 +41,15 @@ PORTONE_IDENTITY_CHANNEL_KEY=channel-key-...
 | --- | --- |
 | `POST /api/v1/auth/mfa/verify` | 포트원 V2 본인인증 서버 검증, 인증 상태와 신뢰 점수 반영 |
 | `POST /api/v1/payments/toss/confirm` | 예약 금액 검증 후 토스 결제 승인 |
-| `POST /api/v1/payments/{reservationId}/refund` | 완료/분쟁 거래의 실제 보증금 환급 |
+| `GET /api/v1/payments/{reservationId}` | 실제 결제·누적 환급·남은 환급 가능 금액 조회 |
+| `POST /api/v1/payments/{reservationId}/refund` | 반납 및 분쟁 처리 완료 후 실제 보증금 환급 |
 | `POST /api/v1/qr/issue` | 5분 유효 1회용 START/END QR 발급 |
 | `POST /api/v1/qr/verify` | QR 검증 및 계약/예약 상태 원자적 변경 |
 | `POST /api/v1/admin/reports/{reportId}/resolve` | 관리자 분쟁 결정·제재·감사 로그 |
 | `POST /api/v1/webhooks/toss/{pathToken}` | 토스 상태 재조회 기반 웹훅 동기화 |
 | `GET /actuator/health` | 헬스 체크 |
+
+`TOSS_CONFIRM_URL`을 비워 두면 앱 빌드 시 기본 서버 주소에서 자동 생성합니다. QR 검증 요청은 `payload` 외에 선택한 `contractId`, `action`을 함께 보내야 합니다. [실기기·마이그레이션 점검 안내](../docs/교수님_지도사항_반영.md)에 전체 실행 절차를 정리했습니다.
 
 본인인증 요청 예시:
 
