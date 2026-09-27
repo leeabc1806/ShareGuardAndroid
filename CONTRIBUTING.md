@@ -7,7 +7,7 @@
 - GitHub 계정과 `leeabc1806/ShareGuardAndroid` 저장소 초대
 - Git
 - Android Studio
-- Android SDK Platform 32
+- Android SDK Platform 33
 - 실행할 Android 에뮬레이터 또는 USB 디버깅이 허용된 Android 기기
 
 GitHub에서 받은 저장소 초대를 먼저 승인합니다. 이 저장소는 비공개이므로 초대를 승인한 계정만 복제할 수 있습니다.
@@ -46,8 +46,8 @@ C:\Projects\ShareGuardAndroid\ShareGuardAndroid
 
 1. `File > Open`에서 위 폴더를 선택합니다.
 2. Gradle Sync가 끝날 때까지 기다립니다.
-3. SDK 설치 안내가 나오면 Android SDK Platform 32를 설치합니다.
-4. Gradle JDK는 Android Studio의 Embedded JDK를 우선 사용합니다.
+3. SDK 설치 안내가 나오면 Android SDK Platform 33을 설치합니다.
+4. Gradle JDK는 **JDK 17**을 선택합니다. Embedded JDK도 실제 버전이 17인지 확인합니다. 터미널의 `JAVA_HOME`도 같은 JDK를 사용합니다.
 
 ## 4. Supabase 연결
 
@@ -79,7 +79,9 @@ SUPABASE_PUBLISHABLE_KEY
 
 Google 로그인과 PASS 본인인증을 작업하거나 테스트하는 팀원은 [로그인 및 PASS 설정 가이드](./AUTH_SETUP.md)를 먼저 확인합니다. `PORTONE_API_SECRET`은 `local.properties`가 아니라 Spring Boot 서버 환경 변수에만 등록합니다.
 
-현재 팀의 Supabase 프로젝트를 함께 사용한다면 `database/schema.sql`을 다시 실행하지 않습니다. 새 Supabase 프로젝트를 만드는 담당자만 [데이터베이스 설정 문서](./ShareGuardAndroid/database/README.md)를 따라 스키마를 한 번 실행합니다.
+`SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/`는 에뮬레이터용입니다. 휴대폰용 주소와 결제·지도 설정은 [루트 README](./README.md)를 확인합니다. 현재 PASS 복귀 오류와 실기기 검증은 남아 있습니다.
+
+현재 팀의 Supabase 프로젝트를 함께 사용한다면 `database/schema.sql`을 다시 실행하지 않습니다. 새 Supabase 프로젝트를 만드는 담당자만 [데이터베이스 설정 문서](./ShareGuardAndroid/database/README.md)에 따라 기본 스키마를 한 번 설치하고 서버 시작 시 Flyway V1~V3를 적용합니다.
 
 ## 5. 앱 실행 확인
 
@@ -87,7 +89,7 @@ Google 로그인과 PASS 본인인증을 작업하거나 테스트하는 팀원�
 2. 실행할 에뮬레이터 또는 연결된 기기를 선택합니다.
 3. Run 버튼을 누릅니다.
 4. 앱 상단에 Supabase 로그인 영역이 표시되는지 확인합니다.
-5. 테스트 계정으로 로그인한 뒤 물품 목록 조회와 등록을 확인합니다.
+5. 테스트 계정으로 로그인한 뒤 물품 목록을 조회합니다. 물품 등록은 본인인증을 완료한 계정으로 확인합니다.
 
 터미널 빌드 명령은 다음과 같습니다.
 

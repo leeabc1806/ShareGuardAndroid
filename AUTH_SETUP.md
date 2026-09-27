@@ -1,88 +1,95 @@
-# ShareGuard 로그인 및 PASS 본인인증 설정
+# 로그인·PASS 본인인증 설정
 
-앱에는 이메일 회원가입/로그인, Google 로그인, PortOne을 통한 PASS 본인인증 흐름이 구현되어 있습니다. Google과 PASS는 외부 서비스의 발급 정보가 필요하므로 아래 콘솔 설정을 완료해야 실제 기기에서 동작합니다.
+이메일·Google 로그인은 Supabase Auth, PASS 본인인증 요청은 PortOne V2, 인증 결과 검증은 Spring 서버를 사용합니다.
 
-## 1. Android Studio 준비
+**남은 문제:** 현재 `MfaVerificationActivity.onNewIntent()`는 복귀 Intent로 원래 Intent를 바꿉니다. 이후 검증 요청에서 읽는 `EXTRA_ACCESS_TOKEN`이 복귀 Intent에 없으면 로그인 토큰이 유실될 수 있습니다. 이 오류 수정과 실기기 인증 성공 확인은 아직 완료하지 않았습니다. 아래 설정만으로 전체 PASS 흐름의 성공을 보장하지 않습니다.
 
-1. Android Studio에서 `ShareGuardAndroid` 폴더를 엽니다.
-2. `Settings > Build, Execution, Deployment > Build Tools > Gradle`에서 Gradle JDK를 `Embedded JDK`로 선택합니다.
-3. Android SDK Platform 36을 설치합니다.
-4. `Sync Project with Gradle Files`를 실행합니다.
+## 1. 개발 환경과 공개 설정
 
-프로젝트는 저장소의 Gradle Wrapper와 Android Gradle Plugin 설정을 기준으로 빌드합니다. Android Studio에서는 프로젝트가 지정한 SDK를 설치하고 Embedded JDK 17을 사용하세요.
+Android Studio에서 내부 `ShareGuardAndroid` 폴더를 엽니다. 현재 프로젝트 기준은 **JDK 17, SDK Platform 33, 최소 실행 API 26**입니다. Embedded JDK의 버전을 확인하고 17이 아니면 별도 JDK 17을 선택합니다. [Android 공식 JDK 안내](https://developer.android.com/build/jdks)
 
-## 2. 로컬 공개 설정
-
-각 팀원은 `ShareGuardAndroid/local.properties`에 다음 항목을 설정합니다. 기존 `sdk.dir`은 유지합니다.
+`ShareGuardAndroid/local.properties`의 `sdk.dir`은 유지하고 다음 값을 추가합니다.
 
 ```properties
 SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_YOUR_KEY
-PORTONE_STORE_ID=store-YOUR_STORE_ID
-PORTONE_IDENTITY_CHANNEL_KEY=channel-key-YOUR_PASS_CHANNEL_KEY
 SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
+PORTONE_STORE_ID=store-YOUR_STORE_ID
+PORTONE_IDENTITY_CHANNEL_KEY=channel-key-YOUR_CHANNEL_KEY
 ```
 
-`PORTONE_STORE_ID`와 `PORTONE_IDENTITY_CHANNEL_KEY`는 앱 호출에 필요한 공개 식별자입니다. `PORTONE_API_SECRET`, Supabase `service_role`, `sb_secret_...` 값은 앱이나 GitHub에 넣으면 안 됩니다.
+`10.0.2.2`는 에뮬레이터용입니다. 휴대폰에서는 같은 Wi-Fi의 PC LAN IP 또는 HTTPS 서버 주소를 사용합니다. 설정을 바꾼 뒤 Gradle Sync와 재빌드·설치를 수행합니다. [서버 주소 설정](./README.md)
 
-## 3. 이메일 회원가입
+앱에는 Publishable key와 공개 식별자만 넣습니다. 서버 비밀키, Supabase `sb_secret_`·`service_role`은 앱에 넣지 않습니다. [Supabase 공식 API 키 안내](https://supabase.com/docs/guides/getting-started/api-keys)
 
-Supabase Dashboard의 `Authentication > Providers > Email`에서 Email Provider를 활성화합니다. 이메일 확인을 켠 경우 회원가입 후 확인 메일의 링크를 누른 다음 로그인해야 합니다.
+## 2. 이메일 회원가입
 
-## 4. Google 로그인
+Supabase Dashboard의 Authentication에서 Email Provider를 활성화합니다. 이메일 확인을 켠 프로젝트에서는 가입 확인 메일을 처리한 뒤 로그인합니다. 앱이 로그인한 프로젝트와 Spring 서버의 DB·JWKS 프로젝트가 일치해야 합니다.
 
-1. Google Cloud Console에서 OAuth 동의 화면을 설정합니다.
-2. 웹 애플리케이션 유형의 OAuth Client ID를 만듭니다.
-3. Google OAuth 클라이언트의 승인된 리디렉션 URI에 Supabase Dashboard의 Google Provider 화면에 표시되는 Callback URL을 등록합니다. 일반 형식은 다음과 같습니다.
+## 3. Google 로그인
+
+1. Google Cloud에서 OAuth 동의 화면과 **웹 애플리케이션** 유형의 OAuth Client ID를 준비합니다.
+2. Google의 승인된 리디렉션 URI에는 Supabase Google Provider 화면의 콜백 URL을 등록합니다.
+3. Google Client ID와 Client Secret을 Supabase의 Google Provider 설정에 입력하고 활성화합니다.
+
+Google에 등록하는 Supabase 콜백 URL의 형식:
 
 ```text
 https://YOUR_PROJECT_REF.supabase.co/auth/v1/callback
 ```
 
-4. Supabase Dashboard의 `Authentication > Providers > Google`에서 Google Client ID와 Client Secret을 입력하고 Provider를 활성화합니다.
-5. Supabase Dashboard의 `Authentication > URL Configuration > Redirect URLs`에 다음 앱 딥링크를 추가합니다.
+설정 기준: [Supabase 공식 Google 로그인 안내](https://supabase.com/docs/guides/auth/social-login/auth-google).
+
+4. Supabase의 URL Configuration → Redirect URLs에는 다음 **앱 복귀 주소**를 추가합니다.
 
 ```text
 shareguard://auth/callback
 ```
 
-앱은 PKCE 방식으로 브라우저를 열고, 로그인 완료 후 위 딥링크로 돌아와 Supabase 세션을 교환합니다.
+현재 앱은 PKCE 방식으로 브라우저에서 인증한 뒤 딥링크로 돌아와 세션을 교환합니다. Google에 등록하는 HTTPS 콜백과 앱 딥링크를 혼동하지 않습니다.
 
-## 5. PASS 본인인증
+## 4. PortOne V2 본인인증
 
-PASS 인증은 PASS 개발사와 직접 연결하는 방식이 아니라 PortOne 본인인증 채널을 통해 호출합니다.
+1. PortOne 콘솔에서 상점과 사용할 본인인증 채널의 계약·설정을 준비합니다.
+2. 해당 채널의 Store ID와 Channel Key를 앱의 `local.properties`에 입력합니다.
+3. 서버에 `PORTONE_API_SECRET`, `PORTONE_STORE_ID`를 설정합니다. 전체 서버 환경변수와 실행 방법은 [백엔드 안내](./backend/README.md)를 따릅니다.
+4. 앱 요청의 PG별 옵션을 채널과 맞춥니다. 현재 코드에는 다날용 `bypass.danal.CPTITLE`이 포함되어 있습니다.
 
-1. PortOne 콘솔에서 상점을 생성합니다.
-2. 다날, KCP 또는 KG이니시스의 본인인증 계약을 완료합니다.
-3. PortOne `연동 정보 > 채널 관리`에서 본인인증 채널을 추가하고 Store ID와 Channel Key를 확인합니다.
-4. 두 공개 식별자를 각 팀원의 `local.properties`에 입력합니다.
-5. PortOne V2 API Secret은 Spring Boot 서버의 환경 변수로만 등록합니다.
+`identityVerificationId`는 본인인증 건의 식별자입니다. 서버는 이 값으로 조회한 내역의 `VERIFIED` 상태를 확인해야 합니다. [PortOne 공식 V2 본인인증 안내](https://developers.portone.io/opi/ko/extra/identity-verification/readme-v2)
 
-Spring Boot 실행 환경 예시:
+현재 구현 경로:
 
-```powershell
-$env:PORTONE_API_SECRET="YOUR_PORTONE_V2_API_SECRET"
+```text
+Android WebView → 외부 인증 앱
+→ shareguard://mfa-complete
+→ POST /api/v1/auth/mfa/verify (로그인 토큰 + identityVerificationId)
+→ PortOne V2 내역 조회
+→ Supabase 프로필 인증 상태·신뢰 점수 갱신
 ```
 
-저장소의 `supabase/functions/verify-pass`는 팀 브랜치에서 합쳐진 선택적 Edge Function 예제입니다. 현재 Android 앱의 기본 검증 경로는 `POST /api/v1/auth/mfa/verify` Spring Boot API입니다.
+Spring 서버는 CI/DI 원문·전체 전화번호를 보관하지 않습니다. `private.mfa_verifications`에는 인증 식별자, 사용자 ID, 신원 정보의 해시와 전화번호 마지막 4자리 등이 저장됩니다. “개인정보를 전혀 저장하지 않는다”는 설명은 현재 구현에 맞지 않습니다.
 
-인증 성공 콜백만으로 사용자를 인증 처리하지 않습니다. Spring Boot가 로그인 사용자를 확인하고 PortOne REST API에서 상태를 다시 조회한 뒤 `profiles.verified`와 신뢰 점수를 변경합니다. 인증 과정에서 받은 이름, 생년월일, 전화번호 같은 개인정보는 현재 DB에 저장하지 않습니다.
+저장소의 기존 Edge Function 예제는 현재 Android의 기본 인증 검증 경로가 아닙니다. 현재 앱은 위 Spring API를 호출합니다.
 
-## 6. 확인 순서
+## 5. 수정 후 확인할 시나리오
 
-1. 앱에서 이메일 회원가입 또는 Google 로그인을 진행합니다.
-2. 로그인 후 화면에 `PASS 본인인증 필요`가 표시되는지 확인합니다.
-3. `PASS 앱으로 본인인증`을 눌러 인증을 완료합니다.
-4. 앱으로 돌아왔을 때 `로그인 및 PASS 본인인증 완료`가 표시되는지 확인합니다.
-5. 앱을 종료하고 다시 실행해 로그인 세션과 인증 상태가 복원되는지 확인합니다.
-6. 로그아웃 후 거래 기능이 다시 차단되는지 확인합니다.
+아래 목록은 **앞으로 확인할 항목**이며 실기기 성공 기록이 아닙니다.
 
-PASS 앱 전환과 휴대폰 본인확인은 전화번호가 개통된 Android 실기기에서 최종 테스트하는 것이 필요합니다. 에뮬레이터에서는 PASS 앱 설치와 통신사 본인확인 환경이 없어 전체 인증을 완료하지 못할 수 있습니다.
+- 이메일·Google 로그인 후 실제 사용자 프로필 조회
+- 미인증 계정의 물품 등록·결제 차단
+- PASS 앱 전환 후 복귀 시 로그인 토큰 유지 및 서버 인증 요청
+- 인증 취소·오류 시 프로필을 인증 완료로 바꾸지 않음
+- PortOne 서버 검증 성공 후 인증 배지와 신뢰 점수 갱신
+- 앱 재시작·계정 전환 시 세션과 표시 정보 확인
+- 기기 두 대에서 같은 계정의 서버 인증 상태 확인
 
-## 7. 팀 공유 규칙
+PASS 앱 전환을 포함한 흐름은 해당 인증 채널을 사용할 수 있는 실제 Android 기기에서 확인합니다. 에뮬레이터의 화면 표시와 API 오류 테스트만으로 본인인증 완료를 판정하지 않습니다.
 
-- GitHub에는 코드와 `local.properties.example`만 올립니다.
-- 각 팀원은 자신의 `local.properties`를 직접 설정합니다.
-- Google Client Secret과 PortOne API Secret은 프로젝트 관리자만 외부 콘솔과 Supabase Secret에서 관리합니다.
-- DB 변경 파일은 `ShareGuardAndroid/database/migrations`에서 관리합니다.
-- Edge Function 코드는 `ShareGuardAndroid/supabase/functions`에서 관리합니다.
+## 6. 설정·DB 변경 공유
+
+- 각 팀원은 자신의 `local.properties`를 설정하고 Git에는 커밋하지 않습니다.
+- Google Client Secret은 Supabase Google Provider 설정에, PortOne API Secret은 Spring 서버 환경에 보관합니다.
+- 현재 서버 DB 변경은 [backend/src/main/resources/db/migration](./backend/src/main/resources/db/migration)의 Flyway 파일로 관리합니다.
+- 새 DB와 기존 DB의 적용 순서는 [DB 설정 안내](./ShareGuardAndroid/database/README.md)를 따릅니다.
+
+공식 문서 확인일: **2026-09-27**.

@@ -1,368 +1,197 @@
-# ShareGuard MVP
+# ShareGuard
 
-교수님 지도사항 2~5의 수정 내용, 실기기 실행과 검증 절차는 [연동 수정 안내](./docs/교수님_지도사항_반영.md)를 참고하세요.
+개인 간 물품 대여를 위한 Android 앱과 Spring Boot 서버입니다. Supabase로 로그인·물품·예약 데이터를 관리하고, Spring 서버에서 본인인증 결과, 결제 승인·환급, 일회용 QR과 관리자 분쟁 결정을 검증합니다.
 
-`ShareGuard_통합문서.pdf`의 SRS/SDD/API 명세를 기준으로 만든 실행 가능한 웹 프로토타입입니다. 별도 서버 없이 [index.html](./index.html)을 브라우저에서 열면 동작합니다.
+**현재 상태:** 지도사항 2~5의 코드 반영과 로컬 자동 검증을 마쳤습니다. 팀 Supabase 연결, 외부 결제·본인인증 서비스와 실기기를 함께 사용하는 최종 검증은 남아 있습니다. PASS 복귀 오류 및 거래별 채팅·자료 조회·관리자 처리의 남은 작업은 아래 표를 확인하세요.
 
-Android 네이티브 MVP는 [ShareGuardAndroid](./ShareGuardAndroid) 폴더에 추가했습니다. Kotlin + Android 기본 View로 구현되어 외부 UI 라이브러리 없이 빌드됩니다. 민감한 결제·QR·관리자 처리를 담당하는 [Spring Boot 백엔드](./backend/README.md)도 포함합니다.
+## 문서와 프로젝트 구성
 
-이메일/Google 로그인과 PortOne PASS 본인인증을 연결하려면 [로그인 및 PASS 설정 가이드](./AUTH_SETUP.md)를 따라 외부 콘솔과 로컬 공개 식별자를 설정합니다.
-
-## 팀원 빠른 시작
-
-처음 참여하는 팀원은 [팀 협업 가이드](./CONTRIBUTING.md)를 순서대로 따라 하면 됩니다. GitHub 초대 승인, 프로젝트 복제, Android Studio 실행, Supabase 연결, 브랜치 생성과 Pull Request 방법까지 설명되어 있습니다.
-
-저장소를 복제한 뒤 Android Studio에서는 저장소 루트가 아니라 내부의 `ShareGuardAndroid` 폴더를 엽니다.
-
-```text
-복제한 폴더/
-├─ README.md
-├─ CONTRIBUTING.md
-├─ index.html
-├─ backend/              <- Spring Boot 서버
-└─ ShareGuardAndroid/    <- Android Studio에서 이 폴더 열기
-```
-
-## 구현 범위
-
-- `AUTH-03`: 본인 인증 완료/해제 상태와 미인증 사용자 거래 차단
-- `ITEM-01`: 위치 기반 물품 목록, 실제 카카오맵 마커, 카테고리 필터, 거리/가격/신뢰 정렬
-- `ITEM-02`: 물품 등록 폼, 카카오맵 거래 위치 선택과 내 물품 목록
-- `RENT-03`: 예약 신청, 승인 대기, 대여자 승인 흐름
-- `RENT-01`: 에스크로 결제 상태 전환
-- `FR-06`: 전자 계약 생성 및 서명 상태
-- `RENT-04`: 대여 전/후 상태 사진 아카이브
-- `RENT-02`: QR START/END 인증과 계약 상태 전환
-- `FR-08`: 거래별 채팅방과 메시지 전송
-- `FR-09`: 반납 완료 후 보증금 환급 상태
-- `FR-13`: 거래 후기와 신뢰 지수 반영
-- 관리자: 분쟁 신고, 환급 보류, 일부 차감 후 종결
-
-## 외부 API 없이 추가 구현한 기능
-
-1. Android 위치 권한과 GPS/네트워크 위치를 사용한 실제 거리 계산 및 반경 필터
-2. 실제 QR 생성·카메라 스캔, 5분 만료, 단계/계약 검증, 무결성 서명과 재사용 차단
-3. 물품 사진 최대 5장 선택·미리보기·삭제, 1920px JPEG 압축과 Supabase Storage 업로드
-4. 예약 시작일/종료일 달력, 과거·역전 날짜 검증, 중복 예약 차단과 금액 자동 계산
-5. 손가락 전자 서명, 계약 PDF 생성·보관·공유
-6. 인증·거래·평점·무사고·분쟁 기반 신뢰 점수와 10/20/30% 차등 보증금
-7. 5초 채팅 자동 갱신, 메시지 전송 시각과 읽음 시각 저장
-8. 관리자 분쟁 결정 이력, 일부 차감, 전액 환급, 게시글 숨김, 사용자 경고·정지
-
-기존 Supabase 프로젝트에는 최신 [schema.sql](./ShareGuardAndroid/database/schema.sql)을 SQL Editor에서 다시 적용해야 추가 테이블, 함수와 트리거가 생성됩니다. 운영 데이터가 있는 프로젝트에서는 실행 전에 백업하고 변경 구문을 검토하세요.
-
-## 데모 흐름
-
-1. 로그인 후 `PASS 본인인증 시작`을 눌러 포트원 테스트 인증을 완료합니다.
-2. 홈에서 물품을 선택하고 `예약 신청`을 누릅니다.
-3. 예약 화면에서 `예약 승인` -> `에스크로 결제` -> `전자 계약 서명`을 차례로 누릅니다.
-4. QR 화면에서 대여 전 사진 업로드, `START 인증`, 반납 후 사진 업로드, `END 인증`을 진행합니다.
-5. 완료 후 후기 작성 또는 분쟁 신고/관리자 처리를 확인합니다.
-
-상태는 `localStorage`에 저장됩니다. 처음 상태로 되돌리려면 앱 우측 상단의 `데모 초기화`를 누르면 됩니다.
-
-## Android 앱 실행
-
-이 프로젝트의 Gradle JDK는 Java 17을 사용합니다. Android Studio의 `Settings > Build, Execution, Deployment > Build Tools > Gradle > Gradle JDK`에서 JDK 17을 선택합니다.
-
-```powershell
-cd ShareGuardAndroid
-.\gradlew.bat assembleDebug
-```
-
-빌드 결과 APK:
+| 문서 | 내용 |
+| --- | --- |
+| [팀 협업 가이드](./CONTRIBUTING.md) | 복제, 개발 브랜치, 커밋과 Pull Request |
+| [백엔드 실행 안내](./backend/README.md) | 환경변수, JWT 설정, API와 서버 테스트 |
+| [DB 설정 안내](./ShareGuardAndroid/database/README.md) | 최초 스키마와 이후 Flyway 마이그레이션 |
+| [로그인·PASS 설정 안내](./AUTH_SETUP.md) | 이메일·Google·PortOne 설정과 남은 검증 |
+| [지도사항 2~5 변경 내역](./docs/교수님_지도사항_반영.md) | 변경된 동작, 실기기 연결 및 검증 기록 |
 
 ```text
-ShareGuardAndroid/app/build/outputs/apk/debug/app-debug.apk
+저장소/
+├─ ShareGuardAndroid/         # Android Studio에서 열 폴더
+│  ├─ app/                    # Kotlin + Android Views / AndroidX 앱
+│  ├─ database/schema.sql     # 신규 Supabase DB 최초 설치용
+│  └─ local.properties.example
+├─ backend/                   # Java 17 / Spring Boot 4.1.1
+│  ├─ src/main/resources/db/migration/
+│  └─ tools/                  # 환경 점검·로컬 DB 테스트
+├─ tools/Configure-DeviceServer.ps1
+├─ docs/
+└─ index.html                 # 별도 웹 화면 프로토타입
 ```
 
-Android Studio에서는 `ShareGuardAndroid` 폴더를 열고 `app` 구성을 실행하면 됩니다. 로그인과 PASS 본인인증을 마친 뒤 홈의 물품 예약, 예약 승인, 에스크로 결제, 전자 계약, QR 인증, 반납 환급 흐름을 시연할 수 있습니다.
+앱은 Supabase Auth·Data API·Storage와 Spring 서버를 모두 사용합니다. 서버는 같은 Supabase 프로젝트의 PostgreSQL에 JDBC로 접속합니다.
 
-## PASS 휴대폰 본인인증 (PortOne V2)
+[index.html](./index.html)은 서버 없이 열 수 있는 **별도 웹 프로토타입**이며 상태를 브라우저 `localStorage`에 저장합니다. 이 화면의 결제·인증 상태 전환은 Android 앱의 실제 서버 연동 검증과 별개입니다.
 
-현재 구현은 포트원 V2 본인인증을 사용합니다. V2의 서버 검증 식별자는 V1의 `imp_uid`가 아니라 `identityVerificationId`입니다. 백엔드는 이전 앱 마이그레이션을 위해 `imp_uid` JSON 별칭도 받지만, 이를 V2 조회 API의 식별자로만 사용하며 클라이언트 콜백 자체를 인증 성공으로 신뢰하지 않습니다.
+## 지도사항별 진행 상태
 
-포트원 콘솔에서 테스트 스토어와 본인인증 채널을 만든 뒤 Android의 `local.properties`에 다음 값을 넣습니다.
+2026-09-27 코드 기준입니다. “연결”은 코드 구현을 뜻하며 외부 서비스까지 실제 성공했다는 뜻은 아닙니다.
+
+| 번호 | 항목 | 현재 코드와 남은 작업 |
+| --- | --- | --- |
+| 1 | PASS 실제 인증 | WebView·딥링크·서버 조회 구현. 앱 복귀 시 로그인 토큰 유지 오류 수정과 실기기 인증 성공 확인 필요 |
+| 2 | 실기기 ↔ 서버 | 공통 서버 주소, LAN 접속 설정, 환경 점검 도구와 Flyway V1~V3 반영. 팀 DB와 휴대폰에서 연결 확인 필요 |
+| 3 | 로그인 사용자·신뢰 점수 | 현재 사용자 프로필, 인증 배지, 신뢰 점수·평점·거래 이력 조회 연결. 실제 계정 전환과 데이터 동기화 확인 필요 |
+| 4 | QR 서버 검증 | Spring 발급·검증 API 연결. 만료·재사용·계약·단계·참여자 검사 구현. 두 계정·기기로 전체 거래 확인 필요 |
+| 5 | 결제 승인·환급 | Spring 승인·조회·환급 호출 연결. 반납 완료와 환급 완료를 구분. 팀 토스 테스트 상점에서 승인·취소 확인 필요 |
+| 6 | 거래별 채팅방 | 메시지 저장·5초 갱신 구현. 같은 물품의 여러 예약 중 선택한 거래와 채팅방을 정확히 연결하는 작업 필요 |
+| 7 | 사진·계약서 다시 보기 | 사진 업로드·로컬 계약 PDF 생성 구현. 저장 자료 조회와 다른 기기의 서명·계약서 열람 연결 필요 |
+| 8 | 관리자 처리·환급 | Spring 분쟁 결정 API 호출 구현. 관리자 상세 조회·결정 후 실제 환급까지 이어지는 화면과 시연 확인 필요 |
+
+## Android 빠른 시작
+
+### 1. 개발 환경
+
+- JDK **17**
+- Android SDK Platform **33** (`compileSdk = 33`, `targetSdk = 33`)
+- 실행 기기 Android **8.0 / API 26 이상** (`minSdk = 26`)
+- 저장소의 Gradle Wrapper 사용
+
+버전의 기준은 [앱 Gradle 설정](./ShareGuardAndroid/app/build.gradle.kts)입니다. Android Studio에서 **내부 `ShareGuardAndroid` 폴더**를 열고, `Settings > Build, Execution, Deployment > Build Tools > Gradle > Gradle JDK`를 JDK 17로 맞춥니다. 터미널의 `JAVA_HOME`도 같은 JDK를 사용합니다. [Android 공식 JDK 안내](https://developer.android.com/build/jdks)
+
+### 2. 앱 설정
+
+Android Studio가 만든 `ShareGuardAndroid/local.properties`의 `sdk.dir`을 유지하고 아래 값을 추가합니다. 현재 프로젝트는 [Gradle 코드](./ShareGuardAndroid/app/build.gradle.kts)에서 이 파일의 앱 설정을 직접 읽습니다.
 
 ```properties
+SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_YOUR_KEY
+KAKAO_NATIVE_APP_KEY=YOUR_NATIVE_APP_KEY
+TOSS_CLIENT_KEY=test_gck_YOUR_CLIENT_KEY
 SHAREGUARD_API_BASE_URL=http://10.0.2.2:8080/
-PORTONE_STORE_ID=store-...
-PORTONE_IDENTITY_CHANNEL_KEY=channel-key-...
+TOSS_CONFIRM_URL=
+PORTONE_STORE_ID=store-YOUR_STORE_ID
+PORTONE_IDENTITY_CHANNEL_KEY=channel-key-YOUR_CHANNEL_KEY
 ```
 
-백엔드는 Android에 넣으면 안 되는 API Secret을 환경변수로 받습니다.
+| 설정 | 용도 |
+| --- | --- |
+| `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` | 앱의 로그인·데이터 접근. 현재 코드는 HTTPS URL과 `sb_publishable_` 형식을 확인 |
+| `KAKAO_NATIVE_APP_KEY` | 카카오맵 SDK |
+| `TOSS_CLIENT_KEY` | 결제위젯. 팀 테스트 상점의 클라이언트 키 사용 |
+| `SHAREGUARD_API_BASE_URL` | 본인인증·QR·결제·환급을 처리할 Spring 서버 주소 |
+| `TOSS_CONFIRM_URL` | 비워 두면 기본 서버 주소 + `api/v1/payments/toss/confirm`으로 자동 생성 |
+| `PORTONE_STORE_ID`, `PORTONE_IDENTITY_CHANNEL_KEY` | 본인인증 요청에 필요한 공개 식별자 |
+
+앱에는 공개 식별자만 넣습니다. DB 비밀번호, `TOSS_SECRET_KEY`, `PORTONE_API_SECRET`, Supabase `sb_secret_`·`service_role`은 넣지 않습니다. Publishable key와 로그인 사용자의 토큰은 역할이 다르며 데이터 접근 권한은 RLS 정책으로 제한합니다. [Supabase 공식 API 키 안내](https://supabase.com/docs/guides/getting-started/api-keys)
+
+### 3. 실행 환경에 맞는 서버 주소
+
+| 실행 환경 | `SHAREGUARD_API_BASE_URL` 예시 |
+| --- | --- |
+| Android 에뮬레이터 → 개발 PC | `http://10.0.2.2:8080/` |
+| 같은 Wi-Fi의 휴대폰 → 개발 PC | `http://<PC의 LAN IP>:8080/` |
+| USB 기기 + `adb reverse tcp:8080 tcp:8080` | `http://127.0.0.1:8080/` |
+| 배포된 서버 | `https://<서버 도메인>/` |
+
+`10.0.2.2`는 에뮬레이터에서 개발 PC의 루프백으로 연결하는 특수 주소입니다. 휴대폰에서는 LAN IP 또는 배포 주소를 사용합니다. [Android 공식 에뮬레이터 네트워크 안내](https://developer.android.com/studio/run/emulator-networking-address)
+
+휴대폰용 주소는 저장소 루트에서 다음 도구로 설정할 수 있습니다. 아래 IP는 예시이며 `ipconfig`에서 확인한 PC 주소로 바꿉니다.
 
 ```powershell
-$env:PORTONE_API_SECRET='PortOne V2 API Secret'
-$env:PORTONE_STORE_ID='store-...'
-$env:MFA_TRUST_BONUS='150'
+.\tools\Configure-DeviceServer.ps1 -BaseUrl 'http://192.168.0.12:8080/'
 ```
 
-인증 흐름은 `Android WebView -> PASS 앱 -> shareguard://mfa-complete -> POST /api/v1/auth/mfa/verify -> PortOne V2 서버 조회 -> profiles 업데이트` 순서입니다. 인증 원문 CI/DI와 전체 전화번호는 저장하지 않고, 계정 중복 가입 방지용 SHA-256 지문과 전화번호 마지막 4자리만 `private.mfa_verifications`에 보관합니다.
+서버 실행 후 `-CheckHealth`를 붙이면 PC에서 헬스 체크도 합니다. 휴대폰 브라우저에서도 `http://<PC의 LAN IP>:8080/actuator/health`가 열리는지 별도로 확인합니다. PC에서만 열리면 같은 Wi-Fi, 공유기 단말 간 통신 제한, Windows 개인 네트워크 방화벽의 8080 포트 설정을 확인합니다. HTTP 허용은 현재 디버그 앱 설정에만 있으며 배포 주소에는 HTTPS를 사용합니다.
 
-에뮬레이터에는 실제 PASS 앱을 정상 설치·가입하기 어려우므로 WebView와 서버 오류 흐름까지만 확인하고, PASS 앱 전환과 최종 인증은 통신사 SIM이 있는 실제 Android 기기에서 테스트하는 것이 안전합니다. 로컬 PC 백엔드는 에뮬레이터에서 `10.0.2.2`, 실제 기기에서는 PC의 같은 Wi-Fi 사설 IP 또는 HTTPS 개발 서버 주소를 사용합니다.
+### 4. 빌드와 실행
 
-기존 Supabase 프로젝트에는 다음 중 하나로 DB 변경을 적용해야 합니다.
+1. [DB 설정](./ShareGuardAndroid/database/README.md)과 [백엔드 실행](./backend/README.md)을 담당자와 완료합니다.
+2. Android Studio에서 `File > Sync Project with Gradle Files`를 실행합니다.
+3. 동기화가 끝나면 상단 `app` 구성과 기기를 선택하고 Run을 누릅니다.
+4. 주소·키를 바꿀 때마다 앱을 다시 빌드하고 설치합니다.
 
-- Spring Boot가 같은 PostgreSQL에 연결된 경우 서버 시작 시 Flyway `V2__portone_mfa.sql` 적용
-- Supabase SQL Editor에서 최신 `ShareGuardAndroid/database/schema.sql` 검토 후 적용
-
-물품 등록은 Android가 Supabase Data API에 직접 쓰므로 `items_insert_own` RLS도 MFA를 검사합니다. 결제 API는 Spring Security 필터가, 데모 결제 RPC는 PostgreSQL 함수와 RLS가 각각 미인증 사용자를 차단합니다. 앱은 `MFA_REQUIRED`, HTTP 403 또는 RLS 권한 오류를 받으면 PASS 인증 화면으로 유도합니다.
-
-## 카카오맵 Android SDK 설정
-
-카카오맵 SDK v2를 사용하며 다음 기능이 연결되어 있습니다.
-
-- 지도 탭에서 좌표가 저장된 물품을 실제 카카오맵 마커로 표시
-- 물품 마커를 누르면 해당 물품 상세 화면으로 이동
-- `현재 위치 표시`를 눌러 지도 중심과 내 위치 마커 갱신
-- `내 위치 기준 가까운 물품`에서 현재 좌표와 물품 좌표의 실제 직선거리를 계산해 가까운 순으로 검색
-- `선택 거리 안 물품`에서 내 위치 기준 `500m`, `1km`, `3km`, `5km`, `10km`, `20km` 반경으로 마커 필터링
-- 시/군/구 또는 행정동(예: `강남구`, `역삼동`)으로 저장된 거래 주소 검색
-- 물품 등록 시 지도 중앙점 또는 현재 위치를 거래 좌표로 선택
-- 선택 좌표를 주소로 변환해 등록 화면의 `거래 위치` 입력칸에 자동 반영
-- 선택한 `latitude`, `longitude`를 Supabase `items` 테이블에 저장
-
-카카오 공식 문서:
-
-- [Kakao Maps API](https://apis.map.kakao.com/)
-- [Android SDK v2 시작하기](https://apis.map.kakao.com/android_v2/docs/getting-started/quickstart/)
-- [KakaoMap API](https://apis.map.kakao.com/android_v2/docs/api-guide/kakaomap/)
-- [Label과 LabelLayer](https://apis.map.kakao.com/android_v2/docs/api-guide/label/)
-- [CameraUpdateFactory 레퍼런스](https://apis.map.kakao.com/android_v2/reference/com/kakao/vectormap/camera/CameraUpdateFactory.html)
-- [좌표로 행정구역정보 변환](https://developers.kakao.com/docs/latest/ko/local/dev-guide#coord-to-region-code)
-- [Android 패키지명과 키 해시 설정](https://developers.kakao.com/docs/ko/android/getting-started)
-
-### 공식 문서와 구현 기준
-
-| 구현 기능 | 적용 방식 | 참고 문서 |
-| --- | --- | --- |
-| 지도 실행과 생명주기 | `MapView.start()`, `resume()`, `pause()` 사용 | [Android SDK v2 시작하기](https://apis.map.kakao.com/android_v2/docs/getting-started/quickstart/) |
-| 물품·현재 위치 마커 | `LabelLayer`에 라벨을 추가하고 검색할 때 기존 물품 라벨만 교체 | [Label과 LabelLayer](https://apis.map.kakao.com/android_v2/docs/api-guide/label/) |
-| 현재 위치·검색 위치로 이동 | `CameraUpdateFactory.newCenterPosition()`으로 중심 좌표와 줌 레벨 변경 | [CameraUpdateFactory](https://apis.map.kakao.com/android_v2/reference/com/kakao/vectormap/camera/CameraUpdateFactory.html) |
-| 지도 중앙점 선택 | 카메라 이동 종료 시점의 `cameraPosition.position`을 거래 좌표로 사용 | [KakaoMap API](https://apis.map.kakao.com/android_v2/docs/api-guide/kakaomap/) |
-| 행정동·시군구 검색 | 현재 구현은 `items.address` 문자열을 검색하며, 카카오 행정구역 코드가 필요할 때 로컬 API로 확장 가능 | [좌표로 행정구역정보 변환](https://developers.kakao.com/docs/latest/ko/local/dev-guide#coord-to-region-code) |
-
-기기 현재 위치는 카카오맵 SDK가 직접 제공하는 값이 아니므로 Android `LocationManager`로 조회합니다. 지도 선택 좌표의 주소 표시는 Android `Geocoder`를 사용하며, 기기의 주소 변환 서비스가 응답하지 않으면 `지도 선택 위치 (위도, 경도)` 형식으로 대체합니다. 관련 동작은 [Android Geocoder 공식 문서](https://developer.android.com/reference/android/location/Geocoder)를 따릅니다.
-
-### 1. 앱과 Android 플랫폼 등록
-
-1. [Kakao Developers](https://developers.kakao.com/)에 로그인하여 앱을 생성합니다.
-2. 앱 관리 화면의 `카카오맵 > 사용 설정`에서 상태를 `ON`으로 변경합니다.
-3. `앱 > 플랫폼 키 > 네이티브 앱 키`에서 Android 앱 정보를 등록합니다.
-4. 패키지명은 `com.shareguard.app`을 사용합니다.
-
-지도 초기화에는 JavaScript 키나 REST API 키가 아닌 `네이티브 앱 키`를 사용합니다. 어드민 키는 Android 앱에 넣지 않습니다.
-
-### 2. 키 해시 등록
-
-Windows에서 현재 개발자의 디버그 키 해시를 구해 네이티브 앱 키의 Android 앱 정보에 등록합니다.
+저장소 루트에서 빌드하려면:
 
 ```powershell
-keytool -exportcert -alias androiddebugkey -keystore "$env:USERPROFILE\.android\debug.keystore" -storepass android -keypass android | openssl sha1 -binary | openssl base64
+.\ShareGuardAndroid\gradlew.bat -p ShareGuardAndroid testDebugUnitTest assembleDebug
 ```
 
-팀원마다 디버그 키스토어가 다를 수 있으므로 각 개발자의 키 해시를 등록합니다. Play Store 배포 시에는 릴리즈 서명 키 해시도 별도로 등록해야 합니다.
+결과 APK는 `ShareGuardAndroid/app/build/outputs/apk/debug/app-debug.apk`입니다. 빌드 성공만으로 서버 연결이나 결제·PASS 성공을 확인할 수는 없습니다.
 
-### 3. 로컬 앱 키 설정
+## 외부 서비스 연결
 
-`ShareGuardAndroid/local.properties`에 발급받은 네이티브 앱 키를 추가합니다.
+### Supabase와 서버 DB
 
-```properties
-KAKAO_NATIVE_APP_KEY=your_kakao_native_app_key
+새 DB는 기본 스키마를 한 번 설치한 뒤 Spring 시작 시 Flyway V1~V3를 적용합니다. 기존 팀 DB에는 초기 `schema.sql`을 다시 실행하지 않습니다. V3 적용 뒤 초기 스키마로 권한을 덮어쓰면 차단했던 데모 결제·QR 경로가 다시 열릴 수 있습니다. [DB 적용 순서](./ShareGuardAndroid/database/README.md)
+
+Spring 서버의 DB 연결·JWT 공개키 주소와 앱의 Supabase URL은 같은 프로젝트를 가리켜야 합니다. 서버의 기본 JWT 허용 알고리즘과 프로젝트 서명 알고리즘을 맞추는 방법은 [백엔드 안내](./backend/README.md)를 참고하세요.
+
+### 카카오맵
+
+1. Kakao Developers에서 앱·Android 플랫폼을 등록합니다. 패키지명은 `com.shareguard.app`입니다.
+2. 사용하는 서명 키의 **키 해시**를 등록하고 카카오맵 사용을 활성화합니다. 팀원별 디버그 서명 키가 다를 수 있습니다.
+3. 네이티브 앱 키를 `KAKAO_NATIVE_APP_KEY`에 입력하고 재빌드합니다.
+
+설정 기준: [카카오맵 Android SDK 시작하기](https://apis.map.kakao.com/android_v2/docs/getting-started/quickstart/). 키 해시 등록 절차도 해당 문서에서 연결된 플랫폼 안내를 따릅니다.
+
+현재 앱에는 물품 마커, 현재 위치, 반경 필터, 저장된 거래 주소 검색과 거래 좌표 선택이 연결되어 있습니다. 현재 위치는 Android `LocationManager`, 좌표의 주소 변환은 `Geocoder`를 사용합니다. 지역 검색은 저장된 `items.address` 문자열을 찾습니다. 지도 인증 오류는 네이티브 앱 키·패키지명·서명 키 해시·카카오맵 사용 설정을 확인하고, 위치 오류는 앱 권한과 기기 위치 설정을 확인합니다.
+
+### 로그인과 PASS
+
+이메일·Google 로그인은 Supabase Auth, 본인인증은 PortOne V2와 Spring 서버를 사용합니다. Google의 Supabase 콜백 URL과 앱 복귀 딥링크는 서로 다릅니다. [로그인·PASS 설정 및 확인 순서](./AUTH_SETUP.md)
+
+서버는 `identityVerificationId`로 PortOne의 인증 내역을 조회하고 `VERIFIED` 상태를 확인합니다. [PortOne 공식 V2 본인인증 안내](https://developers.portone.io/opi/ko/extra/identity-verification/readme-v2)
+
+### 토스 결제와 보증금 환급
+
+앱에는 클라이언트 키, 서버에는 같은 상점·환경의 시크릿 키를 설정합니다. 테스트 키와 라이브 키를 섞지 않습니다. [토스 공식 API 키 안내](https://docs.tosspayments.com/reference/using-api/api-keys)
+
+현재 앱과 서버의 처리 순서는 다음과 같습니다.
+
+1. 앱이 결제위젯에서 인증 결과를 받습니다.
+2. 앱이 `reservationId, paymentKey, orderId, amount`와 로그인 토큰을 Spring 승인 API로 보냅니다.
+3. 서버가 DB 예약 금액과 토스 승인 응답을 확인한 뒤 결제 상태를 저장합니다.
+4. 반납 QR 성공 시 예약·계약이 완료됩니다. 보증금은 이 단계에서 자동 환급되지 않습니다.
+5. 앱이 환급 가능 금액을 조회하고 환급 API를 호출합니다. 서버가 반납·분쟁·차감·기환급 금액을 검사한 뒤 토스 취소 API를 호출합니다.
+6. 앱이 서버 상태를 다시 조회해 처리 중·일부 환급·환급 완료를 표시합니다.
+
+토스 승인·취소 규격은 [공식 코어 API](https://docs.tosspayments.com/reference)를 참고합니다. 현재 구현은 결제 승인과 취소를 이용한 보증금 처리이며, 별도 에스크로 서비스 연동 완료를 의미하지 않습니다. 서버 주소가 없거나 승인에 실패하면 결제 완료로 대체 처리하지 않습니다.
+
+## 검증 기록과 재실행
+
+**2026-09-27, 코드 커밋 `dd6fb7a` 기준 확인 결과:**
+
+| 항목 | 결과 |
+| --- | --- |
+| 백엔드 테스트 | 32개 통과, 실패·건너뜀 0개. 로컬 PostgreSQL 통합 8개와 서버 시작·헬스·인증 테스트 2개 포함 |
+| Android JVM HTTP 테스트 | 10개 통과 |
+| 산출물 | `bootJar`, `assembleDebug` 성공 |
+| 미확인 | 팀 Supabase 접속·마이그레이션, 휴대폰 UI·통신, 실제 PortOne·토스 테스트 상점 연동 |
+
+서버 테스트의 외부 결제·인증 응답에는 테스트 대역을 사용합니다. 로컬 DB 검증은 팀 DB 적용 결과를 대신하지 않습니다.
+
+백엔드 일반 테스트와 JAR 빌드:
+
+```powershell
+.\backend\gradlew.bat -p backend test bootJar
 ```
 
-`local.properties`는 Git에서 제외됩니다. 실제 앱 키를 README, Kotlin 소스 또는 GitHub에 직접 기록하지 않습니다. 값을 추가한 뒤 Gradle Sync 또는 Debug 빌드를 다시 실행합니다.
+DB 테스트 환경변수가 없으면 DB 관련 10개 테스트가 건너뛰어집니다. Docker가 실행 중이고 JDK 17과 로컬 포트 55432가 준비되어 있으면 다음 명령으로 임시 PostgreSQL을 사용하는 전체 서버 검증을 실행합니다. 스크립트가 만든 컨테이너는 종료 시 정리됩니다.
 
-### 4. 현재 위치 권한
-
-`현재 위치 표시`, `내 위치 기준 가까운 물품`, `선택 거리 안 물품`을 처음 누르면 Android 위치 권한 창이 표시됩니다. `앱 사용 중에만 허용`을 선택하면 되며 정확한 위치와 대략적인 위치를 모두 지원합니다.
-
-- 위치는 버튼을 누른 시점에 한 번만 조회하며 백그라운드 위치 권한은 사용하지 않습니다.
-- 휴대폰의 위치 기능이 꺼져 있으면 기능을 켠 뒤 다시 시도합니다.
-- 권한을 다시 설정하려면 `설정 > 애플리케이션 > ShareGuard > 권한 > 위치`에서 변경합니다.
-
-### 5. 지도 검색과 거래 위치 선택
-
-홈 또는 지도 탭에서 `카카오맵 열기`를 누르면 다음 검색을 사용할 수 있습니다.
-
-1. `내 위치 기준 가까운 물품`: 현재 위치를 다시 조회하고 좌표가 있는 물품을 실제 직선거리 기준으로 정렬합니다. 마커를 누르면 계산된 거리도 함께 표시됩니다.
-2. `선택 거리 안 물품`: 반경을 선택한 뒤 누르면 해당 거리 안의 물품 마커만 표시합니다.
-3. `지역 검색`: 시/군/구 또는 행정동을 입력하면 저장된 거래 주소가 일치하는 물품만 표시합니다.
-4. `검색 초기화`: 거리·지역 필터를 해제하고 전체 물품 마커를 다시 표시합니다.
-
-물품 등록에서는 지도를 움직여 중앙 마커를 원하는 위치에 맞춘 뒤 `이 위치를 거래 장소로 선택`을 누릅니다. 선택한 위도·경도와 변환된 주소가 등록 화면에 함께 반영되며, 등록 또는 수정 시 Supabase에도 같은 값이 저장됩니다. 거리 계산과 저장 주소 검색은 앱의 물품 데이터를 대상으로 하므로 추가 카카오 REST API 키가 필요하지 않습니다.
-
-### 문제 해결
-
-- `401`: 네이티브 앱 키, `com.shareguard.app` 패키지명과 현재 서명 키 해시가 일치하는지 확인합니다.
-- `403`: 앱 관리 화면의 `카카오맵 > 사용 설정` 상태가 `ON`인지 확인합니다.
-- 지도가 비어 있음: 인터넷 연결을 확인하고 Logcat에서 `k3f`를 필터로 인증 로그를 확인합니다.
-- 내 위치를 찾지 못함: 앱 위치 권한과 휴대폰 위치 기능(GPS)이 켜져 있는지 확인합니다.
-- 선택한 주소가 좌표로 표시됨: 기기의 주소 변환 서비스가 응답하지 않은 경우입니다. 위도·경도는 정상 저장되며 네트워크 연결 후 다시 선택할 수 있습니다.
-- 물품 마커가 없음: 해당 `items` 행의 `latitude`, `longitude` 값이 `null`인지 확인합니다.
-
-## Supabase 데이터베이스 연결
-
-DB 스키마와 설정 순서는 [ShareGuardAndroid/database/README.md](./ShareGuardAndroid/database/README.md)에 있습니다. Supabase 프로젝트를 만들고 [schema.sql](./ShareGuardAndroid/database/schema.sql)을 실행한 뒤 `ShareGuardAndroid/local.properties`에 Project URL과 Publishable key를 추가하면 됩니다.
-
-현재 Supabase 프로젝트를 함께 사용하는 팀원은 스키마를 다시 실행하지 않아도 됩니다. 각자 `local.properties`만 설정하면 됩니다.
-
-## 토스페이먼츠 테스트 결제
-
-Android 앱의 예약 화면에서 `에스크로 결제`를 누르면 토스페이먼츠 결제위젯이 열립니다. `ShareGuardAndroid/local.properties`에 `TOSS_CLIENT_KEY`를 넣으면 해당 클라이언트 키를 사용하고, 값이 없으면 토스페이먼츠 문서용 테스트 클라이언트 키로 결제 인증만 테스트합니다.
-
-실제 결제 완료 처리는 서버가 필요합니다. `TOSS_CONFIRM_URL`에는 `paymentKey`, `orderId`, `amount`를 받아 토스페이먼츠 결제 승인 API를 호출하는 백엔드 주소를 넣습니다. 토스 시크릿 키는 Android 앱에 넣지 않습니다.
-
-### 필요한 키와 설정
-
-토스페이먼츠 개발자센터의 [API 키](https://docs.tosspayments.com/reference/using-api/api-keys) 메뉴에서 테스트 키를 확인합니다. 토스 문서 기준으로 클라이언트 키와 시크릿 키는 같은 세트로 사용해야 하며, 테스트 키와 라이브 키를 섞으면 `INVALID_API_KEY` 오류가 발생합니다.
-
-Android 앱에는 클라이언트 키와 결제 승인 서버 주소만 넣습니다.
-
-```properties
-# ShareGuardAndroid/local.properties
-TOSS_CLIENT_KEY=test_gck_...
-TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
+```powershell
+.\backend\tools\Test-LocalDatabase.ps1
 ```
 
-에뮬레이터에서 PC의 로컬 서버로 접근할 때는 `localhost` 대신 `10.0.2.2`를 사용합니다. 실제 배포 환경에서는 HTTPS 백엔드 주소를 넣습니다.
+## 자주 막히는 부분
 
-서버에는 시크릿 키를 환경변수로 넣습니다. 이 값은 Android 앱, GitHub, README 예시 커밋에 넣지 않습니다.
+| 증상 | 확인할 내용 |
+| --- | --- |
+| Gradle 동기화·빌드 실패 | 내부 Android 폴더를 열었는지, JDK 17·SDK 33 설치 여부, 동기화 폴더의 빌드 파일 잠금 |
+| Supabase 대신 예시 데이터 표시 | `local.properties` 위치와 URL·Publishable key 형식, 변경 후 재빌드 여부 |
+| 휴대폰에서 서버 접속 실패 | `10.0.2.2` 사용 여부, 서버 실행·LAN IP·방화벽·같은 Wi-Fi |
+| 로그인은 되지만 Spring API가 401 | 같은 Supabase 프로젝트인지, 토큰 만료, JWKS 주소와 JWT 서명 알고리즘 |
+| 거래 기능에서 `MFA_REQUIRED` 또는 403 | 서버의 인증 상태·역할과 RLS 정책. PASS 복귀 문제는 [별도 안내](./AUTH_SETUP.md) 확인 |
+| 반납 후 아직 환급 대기 | 결제 상태 조회, 실제 환급 요청, 미해결 분쟁·차감·토스 취소 결과 |
+| DB 권한·함수 오류 | [마이그레이션 확인 SQL](./backend/tools/verify-migrations.sql)로 V1~V3 및 권한 확인 |
 
-```env
-TOSS_SECRET_KEY=test_gsk_...
-```
-
-서버는 앱에서 받은 `paymentKey`, `orderId`, `amount`를 검증한 뒤 토스페이먼츠 [결제 승인 API](https://docs.tosspayments.com/reference)를 호출합니다. 토스페이먼츠 [인증 가이드](https://docs.tosspayments.com/reference/using-api/authorization)에 따라 시크릿 키 뒤에 `:`를 붙여 Base64 인코딩한 값을 `Authorization: Basic ...` 헤더로 보냅니다.
-
-정리하면 지금 필요한 값은 다음과 같습니다.
-
-- Android 앱: `TOSS_CLIENT_KEY`
-- Android 앱: `TOSS_CONFIRM_URL`
-- 백엔드 서버: `TOSS_SECRET_KEY`
-
-### 프론트엔드와 백엔드 역할
-
-토스페이먼츠 결제는 앱에서 결제수단 인증을 받고, 서버에서 최종 승인을 하는 구조입니다. 토스 공식 문서에서도 결제 승인 API는 `paymentKey`, `orderId`, `amount`를 받아 `POST /v1/payments/confirm`으로 호출하며, 시크릿 키 기반 Basic 인증을 사용합니다.
-
-| 영역 | 담당 | 사용하면 안 되는 값 |
-| --- | --- | --- |
-| Android 앱 | 결제위젯 표시, 주문번호 생성, 결제 인증 결과 수신, 백엔드 승인 URL 호출 | `TOSS_SECRET_KEY` |
-| 백엔드 서버 | 주문 금액 검증, 토스 결제 승인 API 호출, 결제 결과 저장, 실패/중복 요청 처리 | 없음 |
-| 토스페이먼츠 | 결제수단 인증, 승인 API 결과 반환, 결제 상태 관리 | 없음 |
-
-결제 흐름:
-
-```text
-1. Android 앱이 예약 금액으로 토스 결제위젯을 엽니다.
-2. 사용자가 결제수단을 선택하고 인증을 마칩니다.
-3. 앱이 paymentKey, orderId, amount를 받습니다.
-4. 앱이 백엔드의 TOSS_CONFIRM_URL로 reservationId, paymentKey, orderId, amount와 Supabase access token을 보냅니다.
-5. 백엔드는 DB의 예약 금액과 amount가 같은지 검증합니다.
-6. 백엔드는 TOSS_SECRET_KEY로 토스 결제 승인 API를 호출합니다.
-7. 승인 성공 시 백엔드는 결제 완료 상태를 저장하고 앱에 성공 응답을 줍니다.
-8. 앱은 계약 상태를 결제 완료로 바꿉니다.
-```
-
-현재 Android 쪽 코드 위치:
-
-```text
-ShareGuardAndroid/app/build.gradle.kts
-  - 토스페이먼츠 SDK 의존성
-
-ShareGuardAndroid/app/src/main/java/com/shareguard/app/MainActivity.kt
-  - 에스크로 결제 버튼
-  - orderId 생성
-  - TossPaymentActivity 실행
-  - TOSS_CONFIRM_URL 호출
-
-ShareGuardAndroid/app/src/main/java/com/shareguard/app/TossPaymentActivity.kt
-  - 토스 결제위젯 표시
-  - paymentKey, orderId, amount 수신
-
-ShareGuardAndroid/app/src/main/java/com/shareguard/app/data/TossConfirmClient.kt
-  - 앱에서 백엔드 승인 URL로 POST 요청
-```
-
-Android 앱 설정 예시:
-
-```properties
-# ShareGuardAndroid/local.properties
-TOSS_CLIENT_KEY=test_gck_...
-TOSS_CONFIRM_URL=http://10.0.2.2:8080/api/v1/payments/toss/confirm
-```
-
-Android에서 백엔드로 보내는 JSON 형식:
-
-```json
-{
-  "reservationId": "00000000-0000-0000-0000-000000000000",
-  "paymentKey": "토스가 반환한 결제 키",
-  "orderId": "shareguard-1-1720000000000",
-  "amount": 350000
-}
-```
-
-백엔드가 처리해야 하는 최소 로직:
-
-```text
-1. 요청의 orderId로 우리 DB의 예약/주문을 조회합니다.
-2. DB에 저장된 결제 예정 금액과 요청의 amount가 같은지 확인합니다.
-3. 이미 승인된 orderId인지 확인해서 중복 승인을 막습니다.
-4. TOSS_SECRET_KEY로 Basic 인증 헤더를 만듭니다.
-5. 토스페이먼츠 POST /v1/payments/confirm을 호출합니다.
-6. 성공 응답의 paymentKey, orderId, totalAmount, status를 DB에 저장합니다.
-```
-
-Node.js 백엔드 예시:
-
-```js
-import express from "express";
-
-const app = express();
-app.use(express.json());
-
-app.post("/payments/toss/confirm", async (req, res) => {
-  const { paymentKey, orderId, amount } = req.body;
-
-  // TODO: 실제 DB에서 orderId로 예약/주문을 조회하세요.
-  const order = await findOrderByOrderId(orderId);
-  if (!order) {
-    return res.status(404).json({ message: "주문을 찾을 수 없습니다." });
-  }
-
-  if (order.amount !== amount) {
-    return res.status(400).json({ message: "결제 금액이 일치하지 않습니다." });
-  }
-
-  if (order.paymentStatus === "DONE") {
-    return res.status(409).json({ message: "이미 승인된 결제입니다." });
-  }
-
-  const secretKey = process.env.TOSS_SECRET_KEY;
-  const encodedSecret = Buffer.from(`${secretKey}:`).toString("base64");
-
-  const tossResponse = await fetch("https://api.tosspayments.com/v1/payments/confirm", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${encodedSecret}`,
-      "Content-Type": "application/json",
-      "Idempotency-Key": orderId
-    },
-    body: JSON.stringify({ paymentKey, orderId, amount })
-  });
-
-  const payment = await tossResponse.json();
-  if (!tossResponse.ok) {
-    return res.status(tossResponse.status).json(payment);
-  }
-
-  // TODO: payment.status, payment.paymentKey, payment.totalAmount 등을 DB에 저장하세요.
-  await markOrderPaid(orderId, payment);
-
-  return res.json(payment);
-});
-```
-
-위 예시는 구조 설명용입니다. 실제 백엔드에서는 `findOrderByOrderId`, `markOrderPaid`를 프로젝트 DB 코드로 구현해야 합니다. 결제 승인 요청에는 중복 요청 방지를 위해 `Idempotency-Key`를 함께 보내는 것을 권장합니다.
+공식 문서 확인일: **2026-09-27**. 문서의 설정 값은 저장소 구현에 맞춘 것이며, 공식 문서의 최신 SDK 예제 버전을 그대로 적용한 것은 아닙니다.
