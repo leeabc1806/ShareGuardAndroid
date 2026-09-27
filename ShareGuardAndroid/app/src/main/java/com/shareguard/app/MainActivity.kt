@@ -123,7 +123,7 @@ class MainActivity : Activity() {
 
     private data class User(
         val id: Int,
-        val name: String,
+        var name: String,
         val role: String,
         var verified: Boolean,
         var trust: Int,
@@ -221,6 +221,7 @@ class MainActivity : Activity() {
     private var sessionToken: String? = null
     private var pendingPaymentContractId: Int? = null
     private var sessionUserId: String? = null
+    private var profileSyncVersion = 0L
     private var activeChatRoomId: String? = null
     private var pendingPhotoContractId: String? = null
     private var pendingPhotoPhase: String? = null
@@ -333,13 +334,12 @@ class MainActivity : Activity() {
             .putLong(KEY_LAST_ACTIVE_AT, now)
             .apply()
         if (supabase.isConfigured) {
-            currentUser().verified = sessionUserId?.let { userId ->
-                preferences
-                    .getBoolean(identityVerificationKey(userId), false)
-            } ?: false
-            if (!sessionToken.isNullOrBlank() && !currentUser().verified) {
-                verificationStep = VerificationStep.CONSENT
-            }
+            // Server state is authoritative; never restore identity verification
+            // from a local boolean or the sample user's profile.
+            currentUser().verified = false
+            currentUser().trust = 500
+            currentUser().rating = 0.0
+            currentUser().deals = 0
         }
         buildShell()
         render()
@@ -357,6 +357,11 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleGoogleAuthCallback(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::supabase.isInitialized && ::root.isInitialized) loadRemoteProfile()
     }
 
     override fun onStop() {
@@ -1183,6 +1188,7 @@ class MainActivity : Activity() {
         }
 
     private fun calculateTrustScore(user: User): Int {
+        if (::supabase.isInitialized && supabase.isConfigured) return user.trust.coerceIn(0, 1000)
         val verified = if (user.verified) 150 else 0
         val deals = (user.deals * 8).coerceAtMost(160)
         val rating = (((user.rating - 3.0).coerceAtLeast(0.0)) * 80).roundToInt().coerceAtMost(160)
@@ -2096,6 +2102,13 @@ class MainActivity : Activity() {
     private fun persistAuthenticatedSession(auth: AuthResult): Boolean {
         val token = auth.accessToken ?: return false
         val userId = auth.userId ?: sessionUserId ?: return false
+        if (sessionUserId != userId) {
+            profileSyncVersion++
+            currentUser().verified = false
+            currentUser().trust = 500
+            currentUser().rating = 0.0
+            currentUser().deals = 0
+        }
         sessionToken = token
         sessionUserId = userId
         val editor = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
@@ -2121,8 +2134,6 @@ class MainActivity : Activity() {
             runOnUiThread {
                 result.onSuccess { auth ->
                     if (auth.isSignedIn && persistAuthenticatedSession(auth)) {
-                        val userId = sessionUserId
-                        currentUser().verified = userId?.let { preferences.getBoolean(identityVerificationKey(it), false) } ?: false
                         loadRemoteItems()
                     } else {
                         clearStoredSession(preferences)
@@ -2169,10 +2180,7 @@ class MainActivity : Activity() {
                 result.onSuccess { auth ->
                     if (auth.isSignedIn) {
                         if (!persistAuthenticatedSession(auth)) return@onSuccess
-                        val authenticatedUserId = sessionUserId ?: return@onSuccess
                         authPanel = AuthPanel.CLOSED
-                        val preferences = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
-                        currentUser().verified = preferences.getBoolean(identityVerificationKey(authenticatedUserId), false)
                         verificationStep = if (currentUser().verified) VerificationStep.NONE else VerificationStep.CONSENT
                         loadRemoteItems()
                     }
@@ -2231,9 +2239,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 result.onSuccess { auth ->
                     if (auth.isSignedIn && persistAuthenticatedSession(auth)) {
-                        val userId = sessionUserId ?: return@onSuccess
                         authPanel = AuthPanel.CLOSED
-                        currentUser().verified = preferences.getBoolean(identityVerificationKey(userId), false)
                         verificationStep = if (currentUser().verified) VerificationStep.NONE else VerificationStep.CONSENT
                         loadRemoteItems()
                     }
@@ -2248,6 +2254,7 @@ class MainActivity : Activity() {
     }
 
     private fun signOut() {
+        profileSyncVersion++
         val token = sessionToken
         sessionToken = null
         sessionUserId = null
@@ -2290,18 +2297,16 @@ class MainActivity : Activity() {
     }
 
     private fun completeIdentityVerification(trustScore: Int) {
-        val userId = sessionUserId ?: return
+        if (sessionUserId == null) return
+        profileSyncVersion++
         currentUser().verified = true
         currentUser().trust = trustScore
         verificationStep = VerificationStep.NONE
         verificationCodeSent = false
-        getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
-            .edit()
-            .putBoolean(identityVerificationKey(userId), true)
-            .apply()
         screen = Screen.HOME
         toast("본인 인증이 완료되었습니다. 안전 거래 기능이 활성화됐습니다.")
         render()
+        loadRemoteProfile()
     }
 
     private fun handleMfaForbidden(error: Throwable, fallbackMessage: String) {
@@ -2314,6 +2319,7 @@ class MainActivity : Activity() {
             "42501"
         ).any { marker -> details.contains(marker, ignoreCase = true) }
         if (requiresMfa) {
+            profileSyncVersion++
             currentUser().verified = false
             requestIdentityVerification("물품 등록과 결제 전에 PASS 본인인증이 필요합니다.")
         } else {
@@ -2321,10 +2327,35 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun identityVerificationKey(userId: String): String = "identity_verified_$userId"
+    private fun loadRemoteProfile() {
+        if (!supabase.isConfigured) return
+        val token = sessionToken ?: return
+        val userId = sessionUserId ?: return
+        val version = ++profileSyncVersion
+        Thread {
+            val result = runCatching { supabase.fetchProfile(userId, token) }
+            runOnUiThread {
+                // Ignore responses from an old login or requests started before
+                // a later successful MFA verification.
+                if (sessionToken != token || sessionUserId != userId || version != profileSyncVersion) return@runOnUiThread
+                result.onSuccess { profile ->
+                    currentUser().name = profile.displayName
+                    currentUser().verified = profile.verified
+                    currentUser().trust = profile.trustScore
+                    currentUser().rating = profile.rating
+                    currentUser().deals = profile.dealCount
+                    if (profile.verified) verificationStep = VerificationStep.NONE
+                    render()
+                }.onFailure {
+                    toast("인증 상태를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해주세요.")
+                }
+            }
+        }.start()
+    }
 
     private fun loadRemoteItems() {
         if (!supabase.isConfigured) return
+        loadRemoteProfile()
         Thread {
             val result = runCatching { supabase.fetchItems(sessionToken) }
             runOnUiThread {

@@ -29,6 +29,15 @@ data class RemoteItem(
     val longitude: Double?
 )
 
+data class RemoteProfile(
+    val id: String,
+    val displayName: String,
+    val verified: Boolean,
+    val trustScore: Int,
+    val rating: Double,
+    val dealCount: Int
+)
+
 data class NewRemoteItem(
     val title: String,
     val category: String,
@@ -124,6 +133,27 @@ class SupabaseRestClient(
 
     fun signOut(accessToken: String) {
         request("/auth/v1/logout", "POST", JSONObject(), accessToken)
+    }
+
+    fun fetchProfile(userId: String, accessToken: String): RemoteProfile {
+        val response = request(
+            "/rest/v1/profiles?select=id,display_name,verified,trust_score,rating,deal_count" +
+                "&id=eq.${Uri.encode(userId)}&limit=1",
+            "GET",
+            accessToken = accessToken
+        )
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        val rows = JSONArray(response.body)
+        check(rows.length() == 1) { "로그인 사용자 프로필을 찾을 수 없습니다." }
+        val row = rows.getJSONObject(0)
+        return RemoteProfile(
+            id = row.getString("id"),
+            displayName = row.getString("display_name"),
+            verified = row.getBoolean("verified"),
+            trustScore = row.getInt("trust_score"),
+            rating = row.optDouble("rating", 0.0),
+            dealCount = row.optInt("deal_count", 0)
+        )
     }
 
     fun fetchItems(accessToken: String? = null): List<RemoteItem> {

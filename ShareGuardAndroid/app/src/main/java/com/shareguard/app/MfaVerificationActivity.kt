@@ -17,7 +17,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
-import org.json.JSONObject
 import java.util.UUID
 
 class MfaVerificationActivity : AppCompatActivity() {
@@ -25,8 +24,13 @@ class MfaVerificationActivity : AppCompatActivity() {
         const val EXTRA_ACCESS_TOKEN = "access_token"
         const val RESULT_TRUST_SCORE = "trust_score"
         const val RESULT_TRUST_BONUS = "trust_bonus"
-        private const val CALLBACK_SCHEME = "shareguard"
-        private const val CALLBACK_HOST = "mfa-complete"
+        private const val CALLBACK_SCHEME = MfaPortOneContract.CALLBACK_SCHEME
+        private const val CALLBACK_HOST = MfaPortOneContract.CALLBACK_HOST
+        private const val SESSION_PREFS = "shareguard_session"
+        private const val PENDING_ID = "pending_mfa_id"
+        private const val PENDING_USER = "pending_mfa_user"
+        private const val PENDING_AT = "pending_mfa_started_at"
+        private const val REQUEST_TTL_MS = 20L * 60L * 1000L
 
         fun intent(context: Activity, accessToken: String): Intent =
             Intent(context, MfaVerificationActivity::class.java)
@@ -38,26 +42,45 @@ class MfaVerificationActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var viewModel: MfaViewModel
     private lateinit var identityVerificationId: String
+    private var accessToken = ""
     private var verificationSubmitted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val preferences = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
+        val returningFromPass = MfaPortOneContract.isCallbackUrl(intent.data?.toString())
+        val pendingAge = System.currentTimeMillis() - preferences.getLong(PENDING_AT, 0L)
+        val canRestorePending = pendingAge in 0 until REQUEST_TTL_MS &&
+            preferences.getString(PENDING_USER, null) == preferences.getString("user_id", null)
         identityVerificationId = savedInstanceState?.getString("verification_id")
+            ?: (if (returningFromPass && canRestorePending) preferences.getString(PENDING_ID, null) else null)
             ?: "identity-verification-${UUID.randomUUID()}"
+        // External callback intents have no access_token extra. Keep the original session.
+        accessToken = savedInstanceState?.getString(EXTRA_ACCESS_TOKEN)
+            ?: intent.getStringExtra(EXTRA_ACCESS_TOKEN)
+            ?: (if (returningFromPass && canRestorePending) preferences.getString("access_token", null) else null)
+            ?: ""
         buildContentView()
         observeVerification()
         handleCallback(intent.data)
-        if (!verificationSubmitted && savedInstanceState == null) loadPortOne()
+        if (returningFromPass) return
+        if (!verificationSubmitted && viewModel.state.value == MfaViewModel.State.Idle) {
+            val webState = savedInstanceState?.getBundle("web_state")
+            if (webState == null || webView.restoreState(webState) == null) loadPortOne()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
+        // Preserve launch extras for both the verification request and Activity recreation.
+        setIntent(Intent(this.intent).setData(intent.data))
         handleCallback(intent.data)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("verification_id", identityVerificationId)
+        outState.putString(EXTRA_ACCESS_TOKEN, accessToken)
+        outState.putBundle("web_state", Bundle().also { webView.saveState(it) })
         super.onSaveInstanceState(outState)
     }
 
@@ -69,7 +92,11 @@ class MfaVerificationActivity : AppCompatActivity() {
             settings.javaScriptCanOpenWindowsAutomatically = true
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                    route(request.url.toString())
+                    request.isForMainFrame && route(request.url.toString())
+
+                override fun onPageFinished(view: WebView, url: String) {
+                    if (!verificationSubmitted) this@MfaVerificationActivity.progress.visibility = View.GONE
+                }
 
                 @Deprecated("Deprecated in Java")
                 override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = route(url)
@@ -97,7 +124,6 @@ class MfaVerificationActivity : AppCompatActivity() {
         val storeId = BuildConfig.PORTONE_STORE_ID
         val channelKey = BuildConfig.PORTONE_IDENTITY_CHANNEL_KEY
         val apiBaseUrl = BuildConfig.SHAREGUARD_API_BASE_URL
-        val accessToken = intent.getStringExtra(EXTRA_ACCESS_TOKEN).orEmpty()
         if (storeId.isBlank() || channelKey.isBlank() || apiBaseUrl.isBlank() || accessToken.isBlank()) {
             showTerminalError(
                 "PORTONE_STORE_ID, PORTONE_IDENTITY_CHANNEL_KEY, " +
@@ -106,15 +132,17 @@ class MfaVerificationActivity : AppCompatActivity() {
             return
         }
 
-        val requestJson = JSONObject()
-            .put("storeId", storeId)
-            .put("channelKey", channelKey)
-            .put("identityVerificationId", identityVerificationId)
-            .put("redirectUrl", "$CALLBACK_SCHEME://$CALLBACK_HOST")
-            .put("forceRedirect", true)
-            .put("windowType", JSONObject().put("mobile", "REDIRECTION"))
-            .put("bypass", JSONObject().put("danal", JSONObject().put("CPTITLE", "ShareGuard")))
-            .toString()
+        // Persist only request metadata. The existing login session provides the token
+        // if Android kills the app while PASS is in the foreground.
+        getSharedPreferences(SESSION_PREFS, MODE_PRIVATE).let { preferences ->
+            preferences.edit()
+                .putString(PENDING_ID, identityVerificationId)
+                .putString(PENDING_USER, preferences.getString("user_id", null))
+                .putLong(PENDING_AT, System.currentTimeMillis())
+                .apply()
+        }
+
+        val requestJson = MfaPortOneContract.createRequest(storeId, channelKey, identityVerificationId).toString()
 
         val html = """
             <!doctype html>
@@ -129,10 +157,11 @@ class MfaVerificationActivity : AppCompatActivity() {
                   if (response && response.code) {
                     location.href = '$CALLBACK_SCHEME://$CALLBACK_HOST?code=' +
                       encodeURIComponent(response.code) + '&message=' + encodeURIComponent(response.message || '인증 실패');
-                  } else {
-                    location.href = '$CALLBACK_SCHEME://$CALLBACK_HOST?identityVerificationId=' +
-                      encodeURIComponent(request.identityVerificationId);
+                  } else if (response && response.identityVerificationId) {
+                    location.href = request.redirectUrl + '?identityVerificationId=' +
+                      encodeURIComponent(response.identityVerificationId);
                   }
+                  // A redirection flow has no Promise result. Wait for the actual redirect.
                 }).catch((error) => {
                   location.href = '$CALLBACK_SCHEME://$CALLBACK_HOST?code=SDK_ERROR&message=' +
                     encodeURIComponent(error && error.message ? error.message : '인증창 호출 실패');
@@ -140,10 +169,16 @@ class MfaVerificationActivity : AppCompatActivity() {
               </script>
             </body></html>
         """.trimIndent()
-        webView.loadDataWithBaseURL("https://shareguard.app/", html, "text/html", "UTF-8", null)
+        webView.loadDataWithBaseURL(MfaPortOneContract.WEB_ORIGIN, html, "text/html", "UTF-8", null)
     }
 
     private fun route(rawUrl: String): Boolean {
+        // Check the HTTP(S) completion address before normal web navigation. Never
+        // contact the sentinel host, and never treat arbitrary PG pages as completion.
+        if (MfaPortOneContract.isCallbackUrl(rawUrl)) {
+            handleCallback(Uri.parse(rawUrl))
+            return true
+        }
         val uri = Uri.parse(rawUrl)
         return when (uri.scheme?.lowercase()) {
             "http", "https" -> false
@@ -179,31 +214,37 @@ class MfaVerificationActivity : AppCompatActivity() {
             startActivity(external)
         } catch (_: ActivityNotFoundException) {
             when {
-                !fallbackUrl.isNullOrBlank() -> webView.loadUrl(fallbackUrl)
-                !external.`package`.isNullOrBlank() -> startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${external.`package`}"))
-                )
+                fallbackUrl?.let { Uri.parse(it).scheme in setOf("https", "http") } == true -> webView.loadUrl(fallbackUrl)
+                !external.`package`.isNullOrBlank() -> {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${external.`package`}")))
+                    }.onFailure { toast("PASS 앱을 설치한 후 다시 시도해주세요.") }
+                }
                 else -> toast("PASS 앱이 설치되어 있는지 확인하세요.")
             }
         }
     }
 
     private fun handleCallback(uri: Uri?) {
-        if (uri?.scheme != CALLBACK_SCHEME || uri.host != CALLBACK_HOST || verificationSubmitted) return
+        if (uri == null || !MfaPortOneContract.isCallbackUrl(uri.toString()) || verificationSubmitted) return
         val errorCode = uri.getQueryParameter("code")
         if (!errorCode.isNullOrBlank()) {
             showTerminalError(uri.getQueryParameter("message") ?: "본인인증이 취소되거나 실패했습니다.")
             return
         }
-        val callbackId = uri.getQueryParameter("identityVerificationId") ?: identityVerificationId
+        val callbackId = uri.getQueryParameter("identityVerificationId")
         if (callbackId != identityVerificationId) {
             showTerminalError("인증 요청 식별자가 일치하지 않습니다.")
+            return
+        }
+        if (accessToken.isBlank()) {
+            showTerminalError("로그인 세션이 없습니다. 다시 로그인한 뒤 본인인증을 진행해주세요.")
             return
         }
         verificationSubmitted = true
         viewModel.verify(
             BuildConfig.SHAREGUARD_API_BASE_URL,
-            intent.getStringExtra(EXTRA_ACCESS_TOKEN).orEmpty(),
+            accessToken,
             callbackId
         )
     }
@@ -217,6 +258,8 @@ class MfaVerificationActivity : AppCompatActivity() {
                     status.text = "서버에서 포트원 인증 결과를 검증하고 있습니다."
                 }
                 is MfaViewModel.State.Verified -> {
+                    getSharedPreferences(SESSION_PREFS, MODE_PRIVATE).edit()
+                        .remove(PENDING_ID).remove(PENDING_USER).remove(PENDING_AT).apply()
                     setResult(RESULT_OK, Intent()
                         .putExtra(RESULT_TRUST_SCORE, state.trustScore)
                         .putExtra(RESULT_TRUST_BONUS, state.trustBonus))

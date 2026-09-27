@@ -65,6 +65,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
+    testImplementation("junit:junit:4.13.2")
+    // JVM tests must use a real JSON implementation rather than Android's stub methods.
+    testImplementation("org.json:json:20240303")
 }
 
 // Some Windows workspace folders mark generated directories as read-only.

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.shareguard.app.data.MfaApiFactory
 import com.shareguard.app.data.MfaVerifyRequest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import retrofit2.HttpException
 
@@ -22,7 +23,11 @@ class MfaViewModel : ViewModel() {
     val state: LiveData<State> = _state
 
     fun verify(baseUrl: String, accessToken: String, identityVerificationId: String) {
-        if (_state.value == State.Verifying) return
+        if (_state.value == State.Verifying || _state.value is State.Verified) return
+        if (accessToken.isBlank() || identityVerificationId.isBlank()) {
+            _state.value = State.Failed("로그인 후 본인인증을 다시 시작해주세요.")
+            return
+        }
         _state.value = State.Verifying
         viewModelScope.launch {
             try {
@@ -35,6 +40,8 @@ class MfaViewModel : ViewModel() {
                 } else {
                     _state.value = State.Verified(response.trustScore, response.trustBonusApplied)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: HttpException) {
                 _state.value = State.Failed(
                     message = error.response()?.errorBody()?.string().messageOrNull()
