@@ -1,7 +1,28 @@
--- Existing public schema is installed from ShareGuardAndroid/database/schema.sql.
+-- Some team databases have the core public schema but not its final admin
+-- section. The backend owns dispute decisions; complete the required table
+-- and column without replacing or deleting existing team data.
+alter table public.profiles
+    add column if not exists account_status text not null default 'active'
+    check (account_status in ('active', 'warned', 'suspended'));
+
+create table if not exists public.admin_actions (
+    id bigint generated always as identity primary key,
+    report_id uuid not null references public.reports(id) on delete restrict,
+    admin_id uuid not null references public.profiles(id) on delete restrict,
+    decision text not null check (decision in ('dismissed', 'partial', 'uphold')),
+    deduction_amount integer not null default 0 check (deduction_amount >= 0),
+    sanction text not null default 'none' check (sanction in ('none', 'warning', 'hide_item', 'suspend_user')),
+    note text not null check (char_length(note) between 5 and 2000),
+    created_at timestamptz not null default now()
+);
+alter table public.admin_actions enable row level security;
+revoke all on public.admin_actions from public, anon, authenticated;
+revoke all on sequence public.admin_actions_id_seq from public, anon, authenticated;
+
+-- Existing core public schema is installed from ShareGuardAndroid/database/schema.sql.
 do $$ begin
-    if to_regclass('public.profiles') is null or to_regclass('public.admin_actions') is null then
-        raise exception 'Install the full ShareGuard public schema before backend migrations';
+    if to_regclass('public.profiles') is null or to_regclass('public.reservations') is null then
+        raise exception 'Install the core ShareGuard public schema before backend migrations';
     end if;
 end $$;
 
@@ -20,7 +41,11 @@ using (public.can_read_trade_item(id));
 -- Payment/QR/admin transitions must not be callable through the old demo RPCs.
 revoke all on function public.pay_demo_reservation(uuid) from public, anon, authenticated;
 revoke all on function public.verify_rental_transition(uuid, text) from public, anon, authenticated;
-revoke all on function public.resolve_report_admin(uuid, text, integer, text, text) from public, anon, authenticated;
+do $$ begin
+    if to_regprocedure('public.resolve_report_admin(uuid,text,integer,text,text)') is not null then
+        execute 'revoke all on function public.resolve_report_admin(uuid, text, integer, text, text) from public, anon, authenticated';
+    end if;
+end $$;
 
 revoke insert, update, delete on public.payments from anon, authenticated;
 revoke update (status, refunded_at) on public.payments from anon, authenticated;
