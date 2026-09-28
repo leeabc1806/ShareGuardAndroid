@@ -29,4 +29,9 @@ public final class PaymentDtos {
         int approvedAmount,
         int refundedAmount
     ) {}
+
+    public record PaymentStateResponse(
+        UUID reservationId, String status, int approvedAmount, int refundedAmount,
+        int refundableAmount, boolean refundAllowed
+    ) {}
 }

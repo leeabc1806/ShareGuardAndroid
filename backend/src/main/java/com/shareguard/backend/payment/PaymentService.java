@@ -33,6 +33,7 @@ public class PaymentService {
         var refund = transactions.prepareRefund(actorId, reservationId, request.amount());
         try {
             var response = toss.cancel(refund.paymentKey(), request.amount(), request.reason(), refund.idempotencyKey());
+            validateRefund(response, refund, request.amount());
             return transactions.completeRefund(refund, request.amount(), response, actorId);
         } catch (RuntimeException exception) {
             transactions.failRefund(refund, exception);
@@ -40,8 +41,29 @@ public class PaymentService {
         }
     }
 
+    public PaymentDtos.PaymentStateResponse state(UUID actorId, UUID reservationId) {
+        return transactions.state(actorId, reservationId);
+    }
+
+    private void validateRefund(JsonNode response, PaymentTransactionService.PreparedRefund refund, int amount) {
+        if (response == null || !refund.paymentKey().equals(response.path("paymentKey").asText())
+            || !refund.orderId().equals(response.path("orderId").asText())
+            || !java.util.Set.of("CANCELED", "PARTIAL_CANCELED").contains(response.path("status").asText())) {
+            throw new ApiException(502, "결제사의 환급 응답 검증에 실패했습니다.");
+        }
+        long canceled = 0;
+        for (JsonNode cancel : response.path("cancels")) {
+            if (!"DONE".equals(cancel.path("cancelStatus").asText())) continue;
+            canceled += cancel.path("cancelAmount").asLong(0);
+        }
+        if (canceled != (long) refund.refundedAmount() + amount) {
+            throw new ApiException(502, "결제사의 환급 금액 확인이 필요합니다.");
+        }
+    }
+
     private void validateConfirmation(JsonNode response, PaymentTransactionService.PreparedPayment order) {
         if (response == null
+            || !order.paymentKey().equals(response.path("paymentKey").asText())
             || !order.orderId().equals(response.path("orderId").asText())
             || order.expectedAmount() != response.path("totalAmount").asInt(-1)
             || !"DONE".equals(response.path("status").asText())) {

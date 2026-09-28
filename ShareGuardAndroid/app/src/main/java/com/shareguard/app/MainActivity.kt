@@ -41,6 +41,12 @@ import com.shareguard.app.data.RemoteReport
 import com.shareguard.app.data.RemoteReservation
 import com.shareguard.app.data.SupabaseRestClient
 import com.shareguard.app.data.TossConfirmClient
+import com.shareguard.app.data.ServerApiClient
+import com.shareguard.app.data.IssuedQr
+import com.shareguard.app.data.PaymentState
+import com.shareguard.app.data.RemoteProfile
+import com.shareguard.app.data.RemoteReview
+import java.time.Instant
 import androidx.core.content.FileProvider
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.integration.android.IntentIntegrator
@@ -78,8 +84,6 @@ class MainActivity : Activity() {
         private const val MFA_VERIFICATION_REQUEST = 9005
         private const val DEFAULT_MAP_LATITUDE = 37.4979
         private const val DEFAULT_MAP_LONGITUDE = 127.0276
-        private const val QR_TOKEN_TTL_MS = 5L * 60L * 1000L
-        private const val QR_SIGNATURE_PEPPER = "ShareGuard-MVP-QR-v1"
         private const val TOSS_DOCS_CLIENT_KEY = "test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm"
     }
     private enum class AuthPanel {
@@ -146,7 +150,8 @@ class MainActivity : Activity() {
         val remoteId: String? = null,
         val remoteOwnerId: String? = null,
         var latitude: Double? = null,
-        var longitude: Double? = null
+        var longitude: Double? = null,
+        val available: Boolean = true
     )
 
     private data class Reservation(
@@ -218,6 +223,19 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var bottomNav: LinearLayout
     private lateinit var supabase: SupabaseRestClient
+    private val server by lazy { ServerApiClient(BuildConfig.SHAREGUARD_API_BASE_URL) }
+    private var serverUser = User(2, "로그인 필요", "회원", false, 0, 0.0, 0, 0)
+    private var profileLoading = false
+    private var profileLoaded = false
+    private var profileError: String? = null
+    private val ownerProfiles = mutableMapOf<String, RemoteProfile>()
+    private var profileReviews = emptyList<RemoteReview>()
+    private var profileReviewsError: String? = null
+    private val paymentStates = mutableMapOf<String, PaymentState>()
+    private val refundRequests = mutableSetOf<String>()
+    private var paymentStateError: String? = null
+    private var paymentReadVersion = 0
+    private var qrRequestInProgress = false
     private var sessionToken: String? = null
     private var pendingPaymentContractId: Int? = null
     private var sessionUserId: String? = null
@@ -257,7 +275,7 @@ class MainActivity : Activity() {
     private var reservationEndDate: LocalDate = LocalDate.now().plusDays(3)
     private var pendingQrContractId: Int? = null
     private var pendingQrAction: String? = null
-    private val qrPayloads = mutableMapOf<String, String>()
+    private val qrPayloads = mutableMapOf<String, IssuedQr>()
     private val contractPdfFiles = mutableMapOf<Int, File>()
     private val chatHandler = Handler(Looper.getMainLooper())
     private val chatPoll = object : Runnable {
@@ -334,12 +352,11 @@ class MainActivity : Activity() {
             .putLong(KEY_LAST_ACTIVE_AT, now)
             .apply()
         if (supabase.isConfigured) {
-            // Server state is authoritative; never restore identity verification
-            // from a local boolean or the sample user's profile.
-            currentUser().verified = false
-            currentUser().trust = 500
-            currentUser().rating = 0.0
-            currentUser().deals = 0
+            // Never treat a locally cached badge as a server identity verification.
+            resetServerProfile()
+            notifications.clear()
+            items.clear()
+            chatMessages.clear()
         }
         buildShell()
         render()
@@ -349,6 +366,7 @@ class MainActivity : Activity() {
         } else if (!sessionToken.isNullOrBlank() && !preferences.getString(KEY_REFRESH_TOKEN, null).isNullOrBlank()) {
             refreshPersistedSession()
         } else {
+            loadCurrentProfile()
             loadRemoteItems()
         }
     }
@@ -361,7 +379,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (::supabase.isInitialized && ::root.isInitialized) loadRemoteProfile()
+        if (::supabase.isInitialized && ::root.isInitialized && !sessionToken.isNullOrBlank()) {
+            loadCurrentProfile()
+            if (profileLoaded) loadRemoteReservations()
+        }
     }
 
     override fun onStop() {
@@ -408,12 +429,7 @@ class MainActivity : Activity() {
             }
             MFA_VERIFICATION_REQUEST -> {
                 if (resultCode == RESULT_OK && data != null) {
-                    completeIdentityVerification(
-                        data.getIntExtra(
-                            MfaVerificationActivity.RESULT_TRUST_SCORE,
-                            currentUser().trust
-                        )
-                    )
+                    completeIdentityVerification()
                 } else {
                     toast("PASS 본인인증이 완료되지 않았습니다.")
                 }
@@ -570,6 +586,10 @@ class MainActivity : Activity() {
         chatHandler.removeCallbacks(chatPoll)
         content.removeAllViews()
         bottomNav.removeAllViews()
+        if ((screen == Screen.DETAIL || (screen == Screen.CHAT && chatDetailOpen)) && items.none { it.id == selectedItemId }) {
+            screen = Screen.HOME
+            chatDetailOpen = false
+        }
         val showInitialAuth = supabase.isConfigured && sessionToken.isNullOrBlank()
         val showVerification = supabase.isConfigured &&
             !sessionToken.isNullOrBlank() &&
@@ -1214,7 +1234,7 @@ class MainActivity : Activity() {
                 selectedCategory == "IT기기" && item.category == "IT"
             val queryMatches = searchQuery.isBlank() || listOf(item.title, item.category, item.description, item.location)
                 .any { it.contains(searchQuery, ignoreCase = true) }
-            categoryMatches && queryMatches && item.distance <= maxDistanceKm * 1000
+            item.available && categoryMatches && queryMatches && item.distance <= maxDistanceKm * 1000
         }
         return when (sortMode) {
             "가격순" -> categoryFiltered.sortedBy(Item::price)
@@ -1538,10 +1558,15 @@ class MainActivity : Activity() {
             }.withTop(10))
             addView(button("채팅으로 일정 조율", secondary = true) {
                 selectedItemId = item.id
+                activeContractId = contract?.id
+                activeChatRoomId = null
+                chatMessages.clear()
                 chatDetailOpen = true
                 screen = Screen.CHAT
+                loadRemoteChat()
                 render()
             }.withTop(8))
+            if (contract != null) addView(paymentStatusCard(contract).withTop(10))
         }
     }
 
@@ -1574,9 +1599,9 @@ class MainActivity : Activity() {
             addView(metric("보증금", money(appliedDeposit)))
             addView(View(this@MainActivity).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(match, dp(1)).withBottomMargin(8))
             addView(metric("총 결제 금액", money(reservation.totalAmount), blue))
-            addView(textView("🔒 보증금은 ShareGuard가 안전하게 보관하며 정상 반납 확인 후 자동 환급됩니다.", 12, false, muted).withTop(10))
+            addView(textView("반납 확인 후 보증금 환급을 요청할 수 있습니다. 환급 상태는 결제 내역에서 확인해주세요.", 12, false, muted).withTop(10))
             if (!paid) addView(button("${money(reservation.totalAmount)} 안전 결제") { pay(contract) }.withTop(14))
-            else addView(statusChip("✓ 에스크로 결제 완료").withTop(12))
+            else addView(statusChip("✓ 결제 승인 완료").withTop(12))
         }.withTop(10))
         if (paid) {
             content.addView(textView("전자 대여 계약", 19, true, text).withTop(18))
@@ -1614,9 +1639,32 @@ class MainActivity : Activity() {
 
     private fun renderChat() {
         if (!chatDetailOpen) {
+            if (supabase.isConfigured) {
+                val entries = reservations.filter { it.remoteId != null }
+                if (entries.isEmpty()) content.addView(empty("예약한 거래의 대화가 여기에 표시됩니다.").withTop(14))
+                entries.forEach { reservation ->
+                    val item = itemById(reservation.itemId)
+                    val partnerId = if (item.remoteOwnerId == sessionUserId) reservation.remoteBorrowerId else item.remoteOwnerId
+                    val partner = ownerProfiles[partnerId]
+                    content.addView(card().apply {
+                        addView(textView(partner?.displayName ?: "상대방 정보 확인 중", 16, true, text))
+                        addView(textView(item.title, 13, false, muted).withTop(5))
+                        setOnClickListener {
+                            selectedItemId = item.id
+                            activeContractId = contracts.find { it.reservationId == reservation.id }?.id
+                            activeChatRoomId = null
+                            chatMessages.clear()
+                            chatDetailOpen = true
+                            loadRemoteChat()
+                            render()
+                        }
+                    }.withTop(10))
+                }
+                return
+            }
             val search = edit("대화 검색")
             content.addView(search.withTop(14))
-            val chatItems = listOf(items[0], items[1], items[2])
+            val chatItems = items.take(3)
             chatItems.forEachIndexed { index, item ->
                 content.addView(card().apply {
                     setOnClickListener {
@@ -1641,14 +1689,20 @@ class MainActivity : Activity() {
             return
         }
 
+        val chatItem = selectedItem()
+        val chatTrade = activeReservation()?.takeIf { it.itemId == chatItem.id }
+            ?: reservations.find { it.itemId == chatItem.id }
+        val partnerId = if (chatItem.remoteOwnerId == sessionUserId) chatTrade?.remoteBorrowerId else chatItem.remoteOwnerId
+        val partner = if (supabase.isConfigured) ownerProfiles[partnerId]?.toUser()
+            ?: User(0, "상대방 정보 확인 중", "회원", false, 0, 0.0, 0, 0) else ownerOf(chatItem)
         content.addView(row {
             addView(coloredButton("‹", Color.rgb(245, 247, 251), text) {
                 chatDetailOpen = false
                 render()
             }, LinearLayout.LayoutParams(dp(44), dp(44)))
             addView(column {
-                addView(textView(ownerOf(selectedItem()).name, 17, true, text))
-                addView(textView("본인 인증 완료 · 응답 빠름", 11, false, good).withTop(1))
+                addView(textView(partner.name, 17, true, text))
+                addView(textView(if (partner.verified) "본인 인증 완료" else "본인 인증 미확인", 11, false, muted).withTop(1))
             }.apply { setPadding(dp(10), 0, 0, 0) }, LinearLayout.LayoutParams(0, wrap, 1f))
             addView(statusChip("⋮"))
         }.withTop(10))
@@ -1732,23 +1786,23 @@ class MainActivity : Activity() {
             addView(textView(if (isReturn) "2. QR로 반납을 확인해요" else "2. QR로 물품 수령을 확인해요", 19, true, text))
             addView(textView("상대방 화면의 QR을 스캔하거나 내 QR을 보여주세요.", 12, false, muted).withTop(4))
             val action = if (isReturn) "end" else "start"
-            val payload = qrPayload(contract, action)
-            val bitmap = BarcodeEncoder().encodeBitmap(payload, BarcodeFormat.QR_CODE, dp(240), dp(240))
-            addView(ImageView(this@MainActivity).apply {
-                setImageBitmap(bitmap)
-                contentDescription = if (isReturn) "반납 인증 QR 코드" else "대여 시작 인증 QR 코드"
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                background = rounded(Color.WHITE, 12)
-            }, LinearLayout.LayoutParams(match, dp(260)).apply { topMargin = dp(12) })
-            addView(textView("5분간 유효 · 한 번만 사용 가능", 12, true, muted).apply { gravity = Gravity.CENTER }.withTop(8))
+            val issued = qrPayloads["${contract.remoteId}:$action"]?.takeIf { it.expiresAt.isAfter(Instant.now()) }
+            if (issued != null) {
+                val bitmap = BarcodeEncoder().encodeBitmap(issued.payload, BarcodeFormat.QR_CODE, dp(240), dp(240))
+                addView(ImageView(this@MainActivity).apply {
+                    setImageBitmap(bitmap)
+                    contentDescription = "상대방이 스캔할 거래 인증 QR"
+                }, LinearLayout.LayoutParams(match, dp(260)).apply { topMargin = dp(12) })
+                addView(textView("상대방만 인증 가능 · 한 번만 사용 가능", 12, true, muted).withTop(8))
+            } else addView(textView("사진 등록을 마친 뒤 인증 QR을 만들어주세요.", 13, false, muted).withTop(12))
+            addView(button(if (qrRequestInProgress) "처리 중" else "새 QR 만들기", secondary = true) {
+                issueServerQr(contract, action)
+            }.withTop(12))
             addView(button(if (isReturn) "반납 QR 스캔" else "대여 시작 QR 스캔", goodStyle = isReturn) {
                 startQrScan(contract, action)
             }.withTop(12))
         }.withTop(12))
-        if (contract.refunded) content.addView(card(Color.rgb(236, 253, 245)).apply {
-            addView(textView("✓ 보증금 환급 완료", 17, true, good))
-            addView(textView("정상 반납이 확인되어 등록된 결제 수단으로 환급되었습니다.", 12, false, muted).withTop(3))
-        }.withTop(12))
+        content.addView(paymentStatusCard(contract).withTop(12))
     }
 
     private fun renderFeedback() {
@@ -1858,6 +1912,10 @@ class MainActivity : Activity() {
     }
 
     private fun renderProfile() {
+        if (supabase.isConfigured) {
+            renderServerProfile()
+            return
+        }
         val user = currentUser()
         user.trust = calculateTrustScore(user)
         val discount = depositDiscountPercent(user.trust)
@@ -1909,7 +1967,11 @@ class MainActivity : Activity() {
     }
 
     private fun renderAdmin() {
-        val allReports = if (reports.isEmpty()) listOf(demoAdminReport) else reports.toList()
+        if (supabase.isConfigured && (!profileLoaded || serverUser.role != "관리자")) {
+            content.addView(empty("관리자 계정에서 사용할 수 있습니다.").withTop(14))
+            return
+        }
+        val allReports = if (!supabase.isConfigured && reports.isEmpty()) listOf(demoAdminReport) else reports.toList()
         val selectedReport = selectedAdminReportId?.let { id -> allReports.find { it.id == id } }
         if (selectedReport != null) {
             renderAdminReportDetail(selectedReport)
@@ -1920,7 +1982,7 @@ class MainActivity : Activity() {
             addView(space(8))
             addView(adminMetricCard("검토중", allReports.count { it.status == "검토중" }.toString(), blue), LinearLayout.LayoutParams(0, wrap, 1f))
             addView(space(8))
-            addView(adminMetricCard("오늘 거래", "24", good), LinearLayout.LayoutParams(0, wrap, 1f))
+            addView(adminMetricCard("조회된 신고", allReports.size.toString(), good), LinearLayout.LayoutParams(0, wrap, 1f))
         }.withTop(14))
         content.addView(segmentedTabs(listOf("신고 관리", "거래 현황", "사용자"), adminTab) { tab ->
             adminTab = tab
@@ -1950,8 +2012,7 @@ class MainActivity : Activity() {
                         addView(textView(report.type, 17, true, text).withTop(9))
                         addView(textView(report.reason, 12, false, muted).withTop(4))
                         addView(row {
-                            addView(textView("신고자 이지수", 11, false, muted), LinearLayout.LayoutParams(0, wrap, 1f))
-                            addView(textView("증거 사진 5장  ›", 11, true, blue))
+                            addView(textView("신고 상세 확인  ›", 11, true, blue))
                         }.withTop(10))
                     }.withTop(9))
                 }
@@ -1971,21 +2032,19 @@ class MainActivity : Activity() {
         content.addView(card(Color.rgb(255, 249, 235)).apply {
             addView(textView(report.type, 21, true, text))
             addView(textView(report.reason, 13, false, muted).withTop(6))
-            addView(metric("신고자", "이지수 · 신뢰 780").withTop(12))
-            addView(metric("피신고자", "김민수 · 신뢰 850"))
-            addView(metric("접수 일시", "2026.08.23 13:42"))
+            addView(metric("서버 신고 ID", report.remoteId ?: "시연 데이터").withTop(12))
         }.withTop(12))
         content.addView(textView("거래 및 증거 자료", 19, true, text).withTop(18))
         content.addView(card().apply {
-            addView(metric("물품", "소니 A7III 풀프레임 미러리스"))
-            addView(metric("에스크로 보증금", "200,000원"))
-            addView(metric("상태 사진", "대여 전 5장 · 반납 후 5장"))
-            addView(metric("채팅 기록", "18개 메시지 보존"))
-            addView(row {
-                addView(colorBlock("전", Color.rgb(219, 234, 254)), LinearLayout.LayoutParams(0, dp(92), 1f))
-                addView(space(8))
-                addView(colorBlock("후", Color.rgb(254, 226, 226)), LinearLayout.LayoutParams(0, dp(92), 1f))
-            }.withTop(12))
+            val contract = contracts.find { it.id == report.contractId }
+            val reservation = contract?.let { c -> reservations.find { it.id == c.reservationId } }
+            if (reservation == null) {
+                addView(textView("연결된 거래 자료를 확인한 뒤 처리해주세요.", 13, false, muted))
+            } else {
+                addView(metric("물품", itemById(reservation.itemId).title))
+                addView(metric("보증금", money(reservation.depositAmount)))
+                addView(metric("상태 사진", "대여 전 ${contract.beforePhotos}장 · 반납 후 ${contract.afterPhotos}장"))
+            }
         }.withTop(10))
         content.addView(textView("처리 결정", 19, true, text).withTop(18))
         content.addView(card().apply {
@@ -1993,7 +2052,7 @@ class MainActivity : Activity() {
             val noteInput = edit("대여 전후 사진과 채팅 기록을 검토한 관리자 결정입니다.")
             addView(field("차감 금액", deductionInput))
             addView(field("처리 근거 및 메모", noteInput))
-            addView(button("전액 환급 · 신고 기각", goodStyle = true) {
+            addView(button("신고 기각 · 환급 요청 허용", goodStyle = true) {
                 resolveAdminReport(report, "dismissed", 0, noteInput.text.toString(), "none")
             })
             addView(button("일부 차감 · 게시글 숨김", dangerStyle = true) {
@@ -2005,6 +2064,10 @@ class MainActivity : Activity() {
                 resolveAdminReport(report, "uphold", amount, noteInput.text.toString(), "suspend_user")
             }.withTop(8))
             addView(button("추가 자료 요청", secondary = true) {
+                if (supabase.isConfigured) {
+                    toast("추가 자료 요청 전송 기능은 아직 연결되지 않았습니다.")
+                    return@button
+                }
                 report.status = "자료 요청"
                 addNotification("📎", "관리자가 추가 자료를 요청했어요", "분쟁 검토를 위해 물품 상태 사진을 추가해주세요.", Screen.FEEDBACK)
                 toast("양측 사용자에게 자료 요청 알림을 보냈습니다.")
@@ -2015,6 +2078,11 @@ class MainActivity : Activity() {
     }
 
     private fun renderAdminTransactions() {
+        if (supabase.isConfigured) {
+            content.addView(textView("조회된 거래 ${reservations.size}건", 18, true, text).withTop(18))
+            reservations.forEach { content.addView(reservationCard(it).withTop(10)) }
+            return
+        }
         content.addView(textView("실시간 거래 현황", 20, true, text).withTop(18))
         listOf(
             Triple("소니 A7III", "대여중 · QR 시작 완료", good),
@@ -2030,6 +2098,16 @@ class MainActivity : Activity() {
     }
 
     private fun renderAdminUsers() {
+        if (supabase.isConfigured) {
+            content.addView(textView("조회된 사용자", 18, true, text).withTop(18))
+            ownerProfiles.values.forEach { profile ->
+                content.addView(card().apply {
+                    addView(textView(profile.displayName, 16, true, text))
+                    addView(textView("${if (profile.verified) "인증 완료" else "미인증"} · 신뢰 ${profile.trustScore} · 평점 ${profile.rating}", 12, false, muted).withTop(5))
+                }.withTop(10))
+            }
+            return
+        }
         content.addView(textView("사용자 관리", 20, true, text).withTop(18))
         content.addView(edit("이름 또는 이메일 검색").withTop(10))
         content.addView(card().apply {
@@ -2074,7 +2152,7 @@ class MainActivity : Activity() {
                 box.addView(metric("전자 서명", "대여자 ${if (contract.ownerSigned) "완료" else "대기"} · 차용자 ${if (contract.borrowerSigned) "완료" else "대기"}"))
             }
             box.addView(metric("상태 사진", "전 ${contract.beforePhotos}/5 · 후 ${contract.afterPhotos}/5"))
-            box.addView(metric("보증금", if (contract.refunded) "환급 완료" else if (contract.refundHeld) "환급 보류" else "에스크로 보관"))
+            box.addView(paymentStatusCard(contract).withTop(10))
         }
         return box
     }
@@ -2084,11 +2162,11 @@ class MainActivity : Activity() {
         val active = contract?.status
         val steps = listOf(
             ContractStatus.APPROVED to "예약 승인",
-            ContractStatus.PAID to "에스크로 결제",
+            ContractStatus.PAID to "결제 승인",
             ContractStatus.SIGNED to "전자 계약",
             ContractStatus.READY to "상태 사진",
             ContractStatus.RENTING to "QR 대여 인증",
-            ContractStatus.COMPLETED to "반납 및 환급"
+            ContractStatus.COMPLETED to "반납 확인"
         )
         return card().apply {
             addView(textView("거래 상태 흐름", 18, true, text))
@@ -2103,14 +2181,19 @@ class MainActivity : Activity() {
         val token = auth.accessToken ?: return false
         val userId = auth.userId ?: sessionUserId ?: return false
         if (sessionUserId != userId) {
-            profileSyncVersion++
-            currentUser().verified = false
-            currentUser().trust = 500
-            currentUser().rating = 0.0
-            currentUser().deals = 0
+            reservations.clear()
+            contracts.clear()
+            paymentStates.clear()
+            qrPayloads.clear()
+            reports.clear()
+            notifications.clear()
+            chatMessages.clear()
+            activeContractId = null
+            activeChatRoomId = null
         }
         sessionToken = token
         sessionUserId = userId
+        resetServerProfile()
         val editor = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
             .edit()
             .putString(KEY_ACCESS_TOKEN, token)
@@ -2126,26 +2209,31 @@ class MainActivity : Activity() {
     private fun refreshPersistedSession() {
         val preferences = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
         val refreshToken = preferences.getString(KEY_REFRESH_TOKEN, null) ?: run {
+            loadCurrentProfile()
             loadRemoteItems()
             return
         }
+        val previousToken = sessionToken
         Thread {
             val result = runCatching { supabase.refreshSession(refreshToken) }
             runOnUiThread {
+                if (sessionToken != previousToken || preferences.getString(KEY_REFRESH_TOKEN, null) != refreshToken) return@runOnUiThread
                 result.onSuccess { auth ->
                     if (auth.isSignedIn && persistAuthenticatedSession(auth)) {
+                        loadCurrentProfile()
                         loadRemoteItems()
                     } else {
                         clearStoredSession(preferences)
                         sessionToken = null
                         sessionUserId = null
-                        currentUser().verified = false
+                        resetServerProfile()
                         verificationStep = VerificationStep.NONE
                         toast("보안 세션이 만료되어 다시 로그인이 필요합니다.")
                         render()
                     }
                 }.onFailure {
                     // A temporary network failure must not sign the user out.
+                    loadCurrentProfile()
                     loadRemoteItems()
                 }
             }
@@ -2171,7 +2259,7 @@ class MainActivity : Activity() {
         Thread {
             val result = runCatching {
                 if (createAccount) {
-                    supabase.signUp(email, password, currentUser().name)
+                    supabase.signUp(email, password, email.substringBefore('@').take(30).padEnd(2, '_'))
                 } else {
                     supabase.signIn(email, password)
                 }
@@ -2181,7 +2269,8 @@ class MainActivity : Activity() {
                     if (auth.isSignedIn) {
                         if (!persistAuthenticatedSession(auth)) return@onSuccess
                         authPanel = AuthPanel.CLOSED
-                        verificationStep = if (currentUser().verified) VerificationStep.NONE else VerificationStep.CONSENT
+                        verificationStep = VerificationStep.NONE
+                        loadCurrentProfile()
                         loadRemoteItems()
                     }
                     toast(auth.message)
@@ -2240,7 +2329,8 @@ class MainActivity : Activity() {
                 result.onSuccess { auth ->
                     if (auth.isSignedIn && persistAuthenticatedSession(auth)) {
                         authPanel = AuthPanel.CLOSED
-                        verificationStep = if (currentUser().verified) VerificationStep.NONE else VerificationStep.CONSENT
+                        verificationStep = VerificationStep.NONE
+                        loadCurrentProfile()
                         loadRemoteItems()
                     }
                     toast(auth.message)
@@ -2260,7 +2350,17 @@ class MainActivity : Activity() {
         sessionUserId = null
         authPanel = AuthPanel.CLOSED
         verificationStep = VerificationStep.NONE
-        currentUser().verified = false
+        resetServerProfile()
+        reservations.clear()
+        contracts.clear()
+        reports.clear()
+        paymentStates.clear()
+        qrPayloads.clear()
+        refundRequests.clear()
+        notifications.clear()
+        chatMessages.clear()
+        activeContractId = null
+        activeChatRoomId = null
         clearStoredSession(getSharedPreferences(SESSION_PREFS, MODE_PRIVATE))
         render()
         if (token != null) {
@@ -2269,6 +2369,11 @@ class MainActivity : Activity() {
     }
 
     private fun requestIdentityVerification(message: String) {
+        if (supabase.isConfigured && !profileLoaded && sessionToken != null) {
+            loadCurrentProfile()
+            toast("사용자 인증 상태를 확인한 뒤 다시 시도해주세요.")
+            return
+        }
         toast(message)
         verificationStep = VerificationStep.CONSENT
         render()
@@ -2296,27 +2401,22 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun completeIdentityVerification(trustScore: Int) {
+    private fun completeIdentityVerification() {
         if (sessionUserId == null) return
-        profileSyncVersion++
-        currentUser().verified = true
-        currentUser().trust = trustScore
         verificationStep = VerificationStep.NONE
         verificationCodeSent = false
+        resetServerProfile()
+        loadCurrentProfile()
         screen = Screen.HOME
-        toast("본인 인증이 완료되었습니다. 안전 거래 기능이 활성화됐습니다.")
+        toast("본인 인증 결과와 신뢰 점수를 확인하고 있습니다.")
         render()
-        loadRemoteProfile()
     }
 
     private fun handleMfaForbidden(error: Throwable, fallbackMessage: String) {
         val details = error.message.orEmpty()
         val requiresMfa = listOf(
             "MFA_REQUIRED",
-            "PASS 휴대폰",
-            "HTTP 403",
-            "row-level security",
-            "42501"
+            "PASS 휴대폰"
         ).any { marker -> details.contains(marker, ignoreCase = true) }
         if (requiresMfa) {
             profileSyncVersion++
@@ -2327,47 +2427,79 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadRemoteProfile() {
-        if (!supabase.isConfigured) return
-        val token = sessionToken ?: return
-        val userId = sessionUserId ?: return
-        val version = ++profileSyncVersion
-        Thread {
-            val result = runCatching { supabase.fetchProfile(userId, token) }
-            runOnUiThread {
-                // Ignore responses from an old login or requests started before
-                // a later successful MFA verification.
-                if (sessionToken != token || sessionUserId != userId || version != profileSyncVersion) return@runOnUiThread
-                result.onSuccess { profile ->
-                    currentUser().name = profile.displayName
-                    currentUser().verified = profile.verified
-                    currentUser().trust = profile.trustScore
-                    currentUser().rating = profile.rating
-                    currentUser().deals = profile.dealCount
-                    if (profile.verified) verificationStep = VerificationStep.NONE
-                    render()
-                }.onFailure {
-                    toast("인증 상태를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해주세요.")
-                }
+    private fun renderServerProfile() {
+        if (sessionToken == null) {
+            content.addView(empty("로그인하면 내 프로필과 거래 이력을 확인할 수 있습니다."))
+            return
+        }
+        val user = currentUser()
+        content.addView(card().apply {
+            addView(textView(user.name, 24, true, text))
+            if (profileLoaded) {
+                addView(statusChip(if (user.verified) "본인 인증 완료" else "본인 인증 필요").withTop(8))
+                addView(textView("${user.trust} / 1000", 28, true, blue).withTop(14))
+                addView(metric("완료한 거래", "${user.deals}건"))
+                addView(metric("평균 평점", if (user.rating > 0) user.rating.toString() else "등록된 평점 없음"))
+            } else {
+                addView(textView(profileError ?: "프로필을 불러오는 중입니다.", 14, false, muted).withTop(8))
             }
-        }.start()
+            addView(button(if (profileLoading) "불러오는 중" else "프로필 새로고침", secondary = true) {
+                loadCurrentProfile()
+                loadRemoteReservations()
+            }.withTop(12))
+            if (profileLoaded && !user.verified) addView(button("본인 인증 시작") { startPassVerification() }.withTop(8))
+            addView(button("로그아웃", secondary = true) { signOut() }.withTop(8))
+            if (profileLoaded && user.role == "관리자") addView(button("관리자 화면", secondary = true) {
+                screen = Screen.ADMIN
+                loadAdminReports()
+                render()
+            }.withTop(8))
+        })
+        content.addView(sectionTitle("내 거래 이력", "참여한 예약과 거래 상태를 확인합니다.").withTop(16))
+        val mine = reservations.filter { reservation ->
+            reservation.remoteId != null && (reservation.remoteBorrowerId == sessionUserId ||
+                items.find { it.id == reservation.itemId }?.remoteOwnerId == sessionUserId)
+        }
+        if (mine.isEmpty()) content.addView(empty("표시할 거래가 없습니다. 예약 화면에서 새로고침할 수 있습니다."))
+        mine.take(10).forEach { reservation ->
+            content.addView(card().apply {
+                addView(textView(itemById(reservation.itemId).title, 15, true, text))
+                addView(textView("${reservation.startDate} ~ ${reservation.endDate}", 12, false, muted))
+                addView(statusChip(contracts.find { it.reservationId == reservation.id }?.status?.label ?: reservation.status))
+            }.withTop(8))
+        }
+        content.addView(sectionTitle("받은 후기", "최근 등록된 후기입니다.").withTop(16))
+        if (profileReviews.isEmpty()) content.addView(empty(profileReviewsError ?: "등록된 후기가 없습니다."))
+        profileReviews.forEach { review -> content.addView(card().apply {
+            addView(textView("★ ${review.rating} / 5", 16, true, warn))
+            addView(textView(review.content, 14, false, text).withTop(4))
+            addView(textView(review.createdAt.take(10), 12, false, muted).withTop(4))
+        }.withTop(8)) }
     }
 
     private fun loadRemoteItems() {
         if (!supabase.isConfigured) return
-        loadRemoteProfile()
+        val token = sessionToken
         Thread {
-            val result = runCatching { supabase.fetchItems(sessionToken) }
+            val result = runCatching {
+                val remoteItems = supabase.fetchItems(token)
+                remoteItems to supabase.fetchProfiles(remoteItems.map { it.ownerId }, token)
+            }
             runOnUiThread {
-                result.onSuccess { remoteItems ->
-                    val knownIds = items.mapNotNull { it.remoteId }.toSet()
-                    remoteItems
-                        .filterNot { it.id in knownIds }
-                        .map(::remoteToItem)
-                        .reversed()
-                        .forEach { items.add(0, it) }
+                if (sessionToken != token) return@runOnUiThread
+                result.onSuccess { (remoteItems, profiles) ->
+                    profiles.forEach { ownerProfiles[it.id] = it }
+                    val visibleIds = remoteItems.map { it.id }.toSet()
+                    for (index in items.indices) {
+                        if (items[index].remoteId != null && items[index].remoteId !in visibleIds) items[index] = items[index].copy(available = false)
+                    }
+                    remoteItems.map(::remoteToItem).reversed().forEach { fresh ->
+                        val index = items.indexOfFirst { it.remoteId == fresh.remoteId }
+                        if (index >= 0) items[index] = fresh else items.add(0, fresh)
+                    }
+                    if (items.none { it.id == selectedItemId }) items.firstOrNull()?.let { selectedItemId = it.id }
                     if (!sessionToken.isNullOrBlank()) loadRemoteReservations()
-                    if (remoteItems.isNotEmpty() && screen == Screen.HOME) render()
+                    if (screen == Screen.HOME) render()
                 }.onFailure { error ->
                     toast("DB 조회 실패: ${error.message ?: "연결을 확인하세요."}")
                 }
@@ -2393,18 +2525,25 @@ class MainActivity : Activity() {
         startActivityForResult(intent, if (phase == "before") beforePhotoRequest else afterPhotoRequest)
     }
 
-    private fun qrPayload(contract: Contract, action: String): String {
-        val key = "${contract.remoteId ?: contract.id}:$action"
-        val existing = qrPayloads[key]
-        if (existing != null) {
-            val expiresAt = existing.split('|').getOrNull(3)?.toLongOrNull() ?: 0L
-            if (expiresAt > System.currentTimeMillis()) return existing
+    private fun issueServerQr(contract: Contract, action: String) {
+        val token = sessionToken
+        val contractId = contract.remoteId
+        if (token == null || contractId == null || !server.isConfigured) {
+            toast("서버에 연결된 거래에서 QR을 생성할 수 있습니다.")
+            return
         }
-        val contractKey = contract.remoteId ?: contract.id.toString()
-        val expiresAt = System.currentTimeMillis() + QR_TOKEN_TTL_MS
-        val nonce = UUID.randomUUID().toString().replace("-", "")
-        val unsigned = "SG1|$contractKey|$action|$expiresAt|$nonce"
-        return "$unsigned|${qrSignature(unsigned)}".also { qrPayloads[key] = it }
+        if (qrRequestInProgress) return
+        qrRequestInProgress = true
+        Thread {
+            val result = runCatching { server.issueQr(contractId, action, token) }
+            runOnUiThread {
+                qrRequestInProgress = false
+                if (token != sessionToken) return@runOnUiThread
+                result.onSuccess { qrPayloads["$contractId:$action"] = it }
+                    .onFailure { toast(it.message ?: "QR 발급에 실패했습니다.") }
+                render()
+            }
+        }.start()
     }
 
     private fun openItemPhotoPicker() {
@@ -2434,13 +2573,11 @@ class MainActivity : Activity() {
         return output.toByteArray() to "image/jpeg"
     }
 
-    private fun qrSignature(value: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256")
-            .digest("$value|$QR_SIGNATURE_PEPPER".toByteArray(Charsets.UTF_8))
-        return bytes.take(12).joinToString("") { "%02x".format(it) }
-    }
-
     private fun startQrScan(contract: Contract, action: String) {
+        if (contract.remoteId == null || sessionToken == null || !server.isConfigured) {
+            toast("로그인된 서버 거래에서 QR을 인증할 수 있습니다.")
+            return
+        }
         val hasPhotos = if (action == "start") contract.beforePhotos > 0 else contract.afterPhotos > 0
         val validState = if (action == "start") {
             contract.status in setOf(ContractStatus.SIGNED, ContractStatus.READY)
@@ -2460,70 +2597,34 @@ class MainActivity : Activity() {
     }
 
     private fun handleScannedQr(contract: Contract, action: String, payload: String) {
-        val parts = payload.split('|')
-        val expectedContract = contract.remoteId ?: contract.id.toString()
-        val expiresAt = parts.getOrNull(3)?.toLongOrNull()
-        val unsigned = parts.take(5).joinToString("|")
-        val signature = parts.getOrNull(5)
-        val invalidReason = when {
-            parts.size != 6 || parts[0] != "SG1" -> "ShareGuard QR 형식이 아닙니다."
-            parts[1] != expectedContract -> "다른 계약의 QR입니다."
-            parts[2] != action -> "현재 거래 단계와 다른 QR입니다."
-            expiresAt == null || expiresAt < System.currentTimeMillis() -> "만료된 QR입니다. 새 QR을 생성하세요."
-            signature != qrSignature(unsigned) -> "QR 무결성 검증에 실패했습니다."
-            else -> null
-        }
-        if (invalidReason != null) {
-            toast(invalidReason)
-            return
-        }
-        val tokenHash = qrSignature(payload)
-        val preferences = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
-        if (preferences.getBoolean("used_qr_$tokenHash", false)) {
-            toast("이미 사용된 QR입니다.")
-            return
-        }
-        preferences.edit().putBoolean("used_qr_$tokenHash", true).apply()
-        if (contract.remoteId != null && sessionToken != null) verifyRemoteRental(contract, action)
-        else applyDemoQrTransition(contract, action)
-    }
-
-    private fun applyDemoQrTransition(contract: Contract, action: String) {
-        if (action == "start") {
-            contract.status = ContractStatus.RENTING
-            qrPhase = "반납 완료"
-            toast("QR 검증 완료 · 대여가 시작되었습니다.")
-        } else {
-            contract.status = ContractStatus.COMPLETED
-            contract.refunded = true
-            currentUser().deals += 1
-            currentUser().trust += 12
-            addNotification("🔒", "반납 및 환급 완료", "정상 반납이 확인되어 보증금이 환급되었습니다.", Screen.RESERVATIONS)
-            screen = Screen.FEEDBACK
-            toast("QR 검증 완료 · 반납 및 테스트 환급이 처리되었습니다.")
-        }
-        render()
-    }
-
-    private fun verifyRemoteRental(contract: Contract, action: String) {
         val token = sessionToken ?: return
         val contractId = contract.remoteId ?: return
+        if (qrRequestInProgress) return
+        qrRequestInProgress = true
         toast(if (action == "start") "대여 시작을 인증 중입니다." else "반납 완료를 인증 중입니다.")
         Thread {
-            val result = runCatching { supabase.verifyRental(contractId, action, token) }
+            val result = runCatching { server.verifyQr(payload, contractId, action, token, currentLatitude, currentLongitude) }
             runOnUiThread {
+                qrRequestInProgress = false
+                if (sessionToken != token) return@runOnUiThread
                 result.onSuccess {
+                    qrPayloads.remove("$contractId:$action")
                     addNotification(
                         if (action == "end") "🔒" else "📦",
-                        if (action == "end") "반납 및 환급 완료" else "대여가 시작되었어요",
-                        if (action == "end") "정상 반납이 확인되어 보증금 환급이 처리되었습니다." else "QR 인증이 완료되어 거래 상태가 대여중으로 변경되었습니다.",
+                        if (action == "end") "반납 확인 완료" else "대여가 시작되었어요",
+                        if (action == "end") "반납이 확인되었습니다. 결제 내역에서 보증금 환급 상태를 확인해주세요." else "QR 인증이 완료되어 거래 상태가 대여중으로 변경되었습니다.",
                         Screen.RESERVATIONS
                     )
                     screen = if (action == "end") Screen.RESERVATIONS else Screen.QR
                     loadRemoteReservations()
-                    toast(if (action == "end") "반납 완료와 테스트 보증금 환급이 처리되었습니다." else "대여중 상태로 변경되었습니다.")
+                    loadCurrentProfile()
+                    toast(if (action == "end") "반납이 확인되었습니다. 보증금 환급은 별도로 진행해주세요." else "대여중 상태로 변경되었습니다.")
                     render()
-                }.onFailure { error -> toast("QR 인증 실패: ${error.message ?: "서명과 사진 상태를 확인하세요."}") }
+                }.onFailure { error ->
+                    toast("QR 인증 확인 필요: ${error.message ?: "잠시 후 거래 상태를 새로고침하세요."}")
+                    // A response can be lost after server commit; read before another action.
+                    loadRemoteReservations()
+                }
             }
         }.start()
     }
@@ -2532,16 +2633,27 @@ class MainActivity : Activity() {
         val token = sessionToken ?: return
         Thread {
             val result = runCatching {
-                supabase.fetchReservations(token) to supabase.fetchContracts(token)
+                val remoteReservations = supabase.fetchReservations(token)
+                val tradeItems = supabase.fetchItems(token, remoteReservations.map { it.itemId }.distinct())
+                val profiles = supabase.fetchProfiles(remoteReservations.map { it.borrowerId } + tradeItems.map { it.ownerId }, token)
+                Triple(remoteReservations, supabase.fetchContracts(token), profiles to tradeItems)
             }
             runOnUiThread {
-                result.onSuccess { (remoteReservations, remoteContracts) ->
+                if (token != sessionToken) return@runOnUiThread
+                result.onSuccess { (remoteReservations, remoteContracts, details) ->
+                    val (profiles, tradeItems) = details
+                    profiles.forEach { ownerProfiles[it.id] = it }
+                    tradeItems.map(::remoteToItem).forEach { fresh ->
+                        val index = items.indexOfFirst { it.remoteId == fresh.remoteId }
+                        if (index >= 0) items[index] = fresh else items.add(fresh)
+                    }
                     reservations.removeAll { it.remoteId != null }
                     contracts.removeAll { it.remoteId != null }
                     remoteReservations.mapNotNull(::remoteToReservation).forEach(reservations::add)
                     remoteContracts.mapNotNull(::remoteToContract).forEach(contracts::add)
+                    loadPaymentStates()
                     loadRemoteChat()
-                    if (screen == Screen.RESERVATIONS) render()
+                    if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
                 }.onFailure { error ->
                     toast("예약 조회 실패: ${error.message ?: "연결을 확인하세요."}")
                 }
@@ -2551,7 +2663,10 @@ class MainActivity : Activity() {
 
     private fun loadRemoteChat() {
         val token = sessionToken ?: return
-        val reservationId = reservations.firstOrNull { it.remoteId != null }?.remoteId ?: return
+        if (screen != Screen.CHAT || !chatDetailOpen) return
+        val reservationId = activeReservation()?.takeIf { it.itemId == selectedItemId }?.remoteId
+            ?: reservations.firstOrNull { it.itemId == selectedItemId && it.remoteId != null }?.remoteId ?: return
+        val chatItemId = selectedItemId
         Thread {
             val result = runCatching {
                 val roomId = supabase.fetchChatRoom(reservationId, token)
@@ -2560,6 +2675,7 @@ class MainActivity : Activity() {
                 roomId to messages
             }
             runOnUiThread {
+                if (sessionToken != token || selectedItemId != chatItemId || !chatDetailOpen) return@runOnUiThread
                 result.onSuccess { (roomId, messages) ->
                     activeChatRoomId = roomId
                     chatMessages.clear()
@@ -2609,7 +2725,7 @@ class MainActivity : Activity() {
             remoteId = remote.id,
             beforePhotos = remote.beforePhotos,
             afterPhotos = remote.afterPhotos,
-            refunded = remote.status == "completed",
+            refunded = paymentStates[remote.reservationId]?.refunded == true,
             refundHeld = remote.status == "disputed",
             ownerSigned = remote.ownerSigned,
             borrowerSigned = remote.borrowerSigned
@@ -2703,7 +2819,8 @@ class MainActivity : Activity() {
         remoteId = item.id,
         remoteOwnerId = item.ownerId,
         latitude = item.latitude,
-        longitude = item.longitude
+        longitude = item.longitude,
+        available = item.status == "active"
     )
 
     private fun createReservation(item: Item) {
@@ -2862,6 +2979,14 @@ class MainActivity : Activity() {
             return
         }
 
+        if (sessionToken == null || reservation.remoteId == null || reservation.remoteBorrowerId != sessionUserId) {
+            toast("로그인한 차용자의 서버 예약에서 결제할 수 있습니다.")
+            return
+        }
+        if (!server.isConfigured || !TossConfirmClient(BuildConfig.TOSS_CONFIRM_URL).isConfigured) {
+            toast("결제 서버 연결을 먼저 설정해주세요.")
+            return
+        }
         val item = itemById(reservation.itemId)
         val clientKey = BuildConfig.TOSS_CLIENT_KEY.ifBlank { TOSS_DOCS_CLIENT_KEY }
         pendingPaymentContractId = contract.id
@@ -2881,7 +3006,7 @@ class MainActivity : Activity() {
     private fun confirmPayment(contract: Contract, paymentKey: String, orderId: String, amount: Long) {
         val confirmClient = TossConfirmClient(BuildConfig.TOSS_CONFIRM_URL)
         if (!confirmClient.isConfigured) {
-            completeEscrowPayment(contract, "테스트 결제 인증이 완료되었습니다.")
+            toast("결제 서버 주소가 없어 승인을 요청하지 못했습니다. 결제 완료 상태로 변경하지 않았습니다.")
             return
         }
         val token = sessionToken
@@ -2895,12 +3020,14 @@ class MainActivity : Activity() {
         Thread {
             val result = runCatching { confirmClient.confirm(paymentKey, orderId, amount, remoteReservationId, token) }
             runOnUiThread {
+                if (token != sessionToken) return@runOnUiThread
                 result.onSuccess {
-                    addNotification("🔒", "안전 결제 완료", "대여료와 보증금이 에스크로에 안전하게 보관되었습니다.", Screen.TRANSACTION)
+                    addNotification("🔒", "결제 승인 완료", "서버에서 대여료와 보증금 결제 승인을 확인했습니다.", Screen.TRANSACTION)
                     loadRemoteReservations()
-                    toast("토스 결제 승인과 에스크로 예치가 완료되었습니다.")
+                    toast("토스 결제 승인이 완료되었습니다.")
                 }.onFailure { error ->
-                    handleMfaForbidden(error, "결제 승인 실패")
+                    handleMfaForbidden(error, "결제 승인 확인 필요")
+                    loadRemoteReservations()
                 }
             }
         }.start()
@@ -2915,27 +3042,101 @@ class MainActivity : Activity() {
         return generated
     }
 
-    private fun completeEscrowPayment(contract: Contract, successMessage: String) {
-        val token = sessionToken
-        val remoteReservationId = reservations.find { it.id == contract.reservationId }?.remoteId
-        if (supabase.isConfigured && token != null && remoteReservationId != null) {
-            toast("결제 상태를 서버에 저장 중입니다.")
-            Thread {
-                val result = runCatching { supabase.payDemoReservation(remoteReservationId, token) }
-                runOnUiThread {
-                    result.onSuccess {
-                        addNotification("🔒", "안전 결제 완료", "대여료와 보증금이 에스크로에 안전하게 보관되었습니다.", Screen.TRANSACTION)
-                        loadRemoteReservations()
-                        toast(successMessage)
-                    }.onFailure { error -> handleMfaForbidden(error, "결제 기록 실패") }
-                }
-            }.start()
+    private fun loadPaymentStates() {
+        val token = sessionToken ?: return
+        if (!server.isConfigured) {
+            paymentStateError = "결제 서버 연결을 확인해주세요."
             return
         }
-        contract.status = ContractStatus.PAID
-        addNotification("🔒", "안전 결제 완료", "대여료와 보증금이 에스크로에 안전하게 보관되었습니다.", Screen.TRANSACTION)
-        toast(successMessage)
+        val ids = reservations.mapNotNull { it.remoteId }.distinct()
+        val readVersion = ++paymentReadVersion
+        Thread {
+            val results = ids.associateWith { id -> runCatching { server.payment(id, token) } }
+            runOnUiThread {
+                if (sessionToken != token || readVersion != paymentReadVersion) return@runOnUiThread
+                paymentStates.clear()
+                results.forEach { (id, result) -> result.getOrNull()?.let { paymentStates[id] = it } }
+                paymentStateError = if (results.values.any { it.isFailure }) "일부 결제 상태를 확인하지 못했습니다. 새로고침해주세요." else null
+                contracts.forEach { contract ->
+                    val id = reservations.find { it.id == contract.reservationId }?.remoteId
+                    contract.refunded = paymentStates[id]?.refunded == true
+                }
+                if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
+            }
+        }.start()
+    }
+
+    private fun paymentStatusCard(contract: Contract): LinearLayout = card().apply {
+        val reservation = reservations.find { it.id == contract.reservationId }
+        val id = reservation?.remoteId
+        val payment = paymentStates[id]
+        val statusLabel = when {
+            id == null -> "서버 결제 내역 없음"
+            payment == null -> "결제 상태 확인 필요"
+            id in refundRequests -> "환급 처리 확인 중"
+            payment.status == "refunded" -> "보증금 환급 완료"
+            payment.status == "partially_refunded" -> "보증금 일부 환급"
+            payment.status == "refund_pending" -> "환급 처리 확인 중"
+            contract.refundHeld -> "분쟁 확인 중 · 환급 보류"
+            payment.status == "paid" && contract.status == ContractStatus.COMPLETED -> "반납 확인 · 보증금 환급 대기"
+            payment.status == "paid" -> "결제 승인 완료"
+            payment.status == "confirming" -> "결제 승인 확인 중"
+            payment.status == "failed" -> "결제 승인 실패"
+            else -> "결제 전"
+        }
+        addView(textView(statusLabel, 16, true, if (payment?.refunded == true) good else text))
+        payment?.let {
+            addView(metric("누적 환급액", money(it.refundedAmount)).withTop(6))
+            if (contract.status == ContractStatus.COMPLETED && (reservation?.depositAmount ?: 0) == 0) {
+                addView(textView("환급할 보증금이 없습니다.", 12, false, muted))
+            }
+        }
+        paymentStateError?.let { addView(textView(it, 12, false, warn).withTop(6)) }
+        if (id != null) {
+            addView(button("결제·환급 상태 새로고침", secondary = true) { loadPaymentStates() }.withTop(8))
+            if (payment?.refundAllowed == true && id !in refundRequests) {
+                addView(button("보증금 ${money(payment.refundableAmount)} 환급 요청") { requestRefund(contract) }.withTop(8))
+            }
+        }
+    }
+
+    private fun requestRefund(contract: Contract) {
+        val token = sessionToken ?: return
+        val id = reservations.find { it.id == contract.reservationId }?.remoteId ?: return
+        if (!refundRequests.add(id)) return
+        paymentReadVersion++
         render()
+        Thread {
+            val result = runCatching {
+                val fresh = server.payment(id, token)
+                check(fresh.refundAllowed && fresh.refundableAmount > 0) { "현재 환급 가능한 보증금이 없습니다. 상태를 다시 확인해주세요." }
+                server.refund(id, fresh.refundableAmount, token)
+                // Re-read authoritative totals and eligibility after the money-changing call.
+                server.payment(id, token)
+            }
+            runOnUiThread {
+                refundRequests.remove(id)
+                if (sessionToken != token) return@runOnUiThread
+                paymentReadVersion++
+                result.onSuccess { state ->
+                    paymentStates[id] = state
+                    contract.refunded = state.refunded
+                    val label = when (state.status) {
+                        "refunded" -> "보증금 환급 완료"
+                        "partially_refunded" -> "보증금 일부 환급"
+                        else -> "환급 처리 상태 확인 필요"
+                    }
+                    toast(label)
+                    addNotification("🔒", label, "결제 내역에서 확인한 누적 환급액은 ${money(state.refundedAmount)}입니다.", Screen.RESERVATIONS)
+                }.onFailure { error ->
+                    toast("환급 상태 확인 필요: ${error.message.orEmpty()}")
+                    // A timeout does not mean the payment provider failed to cancel.
+                    paymentStates.remove(id)
+                    loadPaymentStates()
+                }
+                render()
+            }
+        }.start()
     }
 
     private fun sign(contract: Contract, signature: Bitmap) {
@@ -3005,6 +3206,7 @@ class MainActivity : Activity() {
         Thread {
             val result = runCatching { supabase.fetchReports(token) }
             runOnUiThread {
+                if (token != sessionToken) return@runOnUiThread
                 result.onSuccess { remoteReports ->
                     reports.removeAll { it.remoteId != null }
                     remoteReports.map(::remoteToReport).forEach(reports::add)
@@ -3049,8 +3251,8 @@ class MainActivity : Activity() {
             return
         }
         val resolution = when (decision) {
-            "dismissed" -> "전액 환급 · ${note.trim()}"
-            "partial" -> "${money(deductionAmount)} 차감 후 환급 · ${note.trim()}"
+            "dismissed" -> "신고 기각 · 환급은 결제 내역에서 별도 요청 · ${note.trim()}"
+            "partial" -> "${money(deductionAmount)} 차감 결정 · 환급은 별도 요청 · ${note.trim()}"
             else -> "신고 인용 및 제재 · ${note.trim()}"
         }
         val token = sessionToken
@@ -3058,15 +3260,18 @@ class MainActivity : Activity() {
             toast("관리자 처리 결과를 저장 중입니다.")
             Thread {
                 val result = runCatching {
-                    supabase.resolveReport(report.remoteId, decision, deductionAmount, note.trim(), sanction, token)
+                    server.resolveReport(report.remoteId, decision, deductionAmount, note.trim(), sanction, token)
                 }
                 runOnUiThread {
+                    if (token != sessionToken) return@runOnUiThread
                     result.onSuccess {
                         report.open = false
                         report.status = if (decision == "dismissed") "기각" else "처리 완료"
                         addNotification("⚖", "분쟁 처리가 완료되었어요", resolution, Screen.RESERVATIONS)
                         selectedAdminReportId = null
                         toast("처리 결과가 서버에 저장되었습니다.")
+                        loadRemoteReservations()
+                        loadCurrentProfile()
                         render()
                     }.onFailure { error -> toast("처리 실패: ${error.message ?: "관리자 권한을 확인하세요."}") }
                 }
@@ -3078,7 +3283,7 @@ class MainActivity : Activity() {
         contracts.find { it.id == report.contractId }?.apply {
             this.status = ContractStatus.COMPLETED
             refundHeld = false
-            refunded = true
+            refunded = false
             val reservation = reservations.find { it.id == reservationId }
             val item = reservation?.let { itemById(it.itemId) }
             if (sanction == "hide_item" && item != null) items.remove(item)
@@ -3150,6 +3355,7 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     result.onSuccess {
                         screen = Screen.PROFILE
+                        loadCurrentProfile()
                         toast("후기가 등록되었습니다.")
                         render()
                     }.onFailure { error -> toast("후기 등록 실패: ${error.message ?: "이미 작성했는지 확인하세요."}") }
@@ -3209,8 +3415,62 @@ class MainActivity : Activity() {
 
     private fun selectedItem(): Item = itemById(selectedItemId)
     private fun itemById(id: Int): Item = items.first { it.id == id }
-    private fun currentUser(): User = users[1]
-    private fun ownerOf(item: Item): User = users.first { it.id == item.ownerId }
+    private fun currentUser(): User = if (supabase.isConfigured) serverUser else users[1]
+    private fun ownerOf(item: Item): User {
+        if (item.remoteOwnerId != null) {
+            return ownerProfiles[item.remoteOwnerId]?.toUser(item.ownerId)
+                ?: User(item.ownerId, "사용자 정보 확인 중", "대여자", false, 0, 0.0, 0, 0)
+        }
+        return users.first { it.id == item.ownerId }
+    }
+
+    private fun RemoteProfile.toUser(localId: Int = 2) = User(
+        localId, displayName, if (role == "admin") "관리자" else "회원", verified, trustScore, rating, dealCount, 0
+    )
+
+    private fun resetServerProfile() {
+        // Invalidate any profile response that was started before a login change
+        // or successful PASS verification.
+        profileSyncVersion++
+        serverUser = User(2, if (sessionToken == null) "로그인 필요" else "프로필 확인 중", "회원", false, 0, 0.0, 0, 0)
+        profileLoaded = false
+        profileLoading = false
+        profileError = null
+        profileReviews = emptyList()
+        profileReviewsError = null
+    }
+
+    private fun loadCurrentProfile() {
+        val token = sessionToken ?: return
+        val userId = sessionUserId ?: return
+        if (!supabase.isConfigured || profileLoading) return
+        val version = ++profileSyncVersion
+        profileLoading = true
+        Thread {
+            val result = runCatching { supabase.fetchCurrentProfile(token) }
+            val reviews = runCatching { supabase.fetchProfileReviews(userId, token) }
+            runOnUiThread {
+                if (sessionUserId != userId || sessionToken != token ||
+                    version != profileSyncVersion || isFinishing) return@runOnUiThread
+                profileLoading = false
+                result.onSuccess { profile ->
+                    if (profile.id != userId) return@onSuccess
+                    serverUser = profile.toUser()
+                    ownerProfiles[profile.id] = profile
+                    profileLoaded = true
+                    profileError = null
+                    if (profile.verified) verificationStep = VerificationStep.NONE
+                }.onFailure {
+                    profileLoaded = false
+                    serverUser.verified = false
+                    profileError = "프로필을 확인할 수 없습니다. 새로고침해주세요."
+                }
+                profileReviews = reviews.getOrDefault(emptyList())
+                profileReviewsError = if (reviews.isFailure) "후기를 불러오지 못했습니다." else null
+                render()
+            }
+        }.start()
+    }
 
     private fun sectionTitle(title: String, subtitle: String): LinearLayout = column {
         addView(textView(title, 18, true, text))

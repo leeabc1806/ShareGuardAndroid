@@ -9,9 +9,11 @@ class TossConfirmClient(private val confirmUrl: String) {
 
     fun confirm(paymentKey: String, orderId: String, amount: Long, reservationId: String, accessToken: String): String {
         check(isConfigured) { "TOSS_CONFIRM_URL이 설정되지 않았습니다." }
+        require(paymentKey.isNotBlank() && orderId.isNotBlank() && amount > 0 && amount <= Int.MAX_VALUE) { "결제 인증 결과가 올바르지 않습니다." }
         val connection = URL(confirmUrl).openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "POST"
+            connection.instanceFollowRedirects = false
             connection.connectTimeout = 10_000
             connection.readTimeout = 15_000
             connection.doOutput = true
@@ -32,6 +34,10 @@ class TossConfirmClient(private val confirmUrl: String) {
             if (status !in 200..299) {
                 throw IllegalStateException(errorMessage(status, responseBody))
             }
+            val payment = JSONObject(responseBody)
+            check(payment.getString("reservationId") == reservationId &&
+                payment.getString("orderId") == orderId && payment.getString("status") == "paid" &&
+                payment.getLong("approvedAmount") == amount) { "서버 결제 승인 결과가 주문과 일치하지 않습니다." }
             responseBody
         } finally {
             connection.disconnect()

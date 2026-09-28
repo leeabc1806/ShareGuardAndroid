@@ -20,6 +20,8 @@ public final class QrDtos {
 
     public record VerifyRequest(
         @NotBlank String payload,
+        @NotNull UUID contractId,
+        @NotBlank @Pattern(regexp = "start|end") String action,
         @DecimalMin("-90") @DecimalMax("90") Double latitude,
         @DecimalMin("-180") @DecimalMax("180") Double longitude
     ) {}

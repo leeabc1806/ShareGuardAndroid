@@ -11,6 +11,8 @@ ShareGuardAndroid/.idea/
 
 # Local SDK path and Supabase credentials
 ShareGuardAndroid/local.properties
+backend/.env
+backend/.env.local
 
 # Generated packages and logs
 *.apk
