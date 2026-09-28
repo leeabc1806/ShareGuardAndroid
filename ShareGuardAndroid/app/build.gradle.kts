@@ -16,9 +16,14 @@ val localProperties = Properties().apply {
 
 fun buildConfigString(name: String): String {
     // One base address is sufficient for MFA, QR, approval and refund APIs.
-    val apiBase = localProperties.getProperty("SHAREGUARD_API_BASE_URL", "").trim().trimEnd('/')
+    // A distribution build can override only the backend URL without editing local.properties.
+    val apiBase = (providers.gradleProperty("shareguardApiBaseUrl").orNull
+        ?.takeIf { it.isNotBlank() }
+        ?: localProperties.getProperty("SHAREGUARD_API_BASE_URL", ""))
+        .trim().trimEnd('/')
     val default = if (name == "TOSS_CONFIRM_URL" && apiBase.isNotEmpty()) "$apiBase/api/v1/payments/toss/confirm" else ""
-    val value = localProperties.getProperty(name)?.takeIf { it.isNotBlank() } ?: default
+    val value = if (name == "SHAREGUARD_API_BASE_URL") apiBase
+        else localProperties.getProperty(name)?.takeIf { it.isNotBlank() } ?: default
     val escaped = value
         .replace("\\", "\\\\")
         .replace("\"", "\\\"")

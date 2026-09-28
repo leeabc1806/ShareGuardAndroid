@@ -1,0 +1,10 @@
+.gradle
+build
+.idea
+*.log
+.env
+.env.*
+local.properties
+README.md
+tools
+src/test
