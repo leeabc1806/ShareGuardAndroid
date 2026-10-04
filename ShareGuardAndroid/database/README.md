@@ -7,7 +7,7 @@ Android는 Supabase Auth·Data API·Storage를 사용하고 Spring 서버는 같
 1. Supabase Dashboard에서 새 프로젝트를 만듭니다.
 2. 관리자 SQL Editor에서 [schema.sql](./schema.sql)을 **최초 한 번** 실행합니다.
 3. [백엔드 안내](../../backend/README.md)에 따라 같은 프로젝트의 DB·JWKS·외부 서비스 환경변수를 설정합니다.
-4. Spring 서버를 시작하여 Flyway V1~V3를 적용합니다.
+4. Spring 서버를 시작하여 Flyway V1~V4를 적용합니다.
 5. [verify-migrations.sql](../../backend/tools/verify-migrations.sql)로 적용 버전과 권한을 확인합니다.
 
 초기 스키마만 적용한 상태로 최종 설정이 끝난 것은 아닙니다. 결제·QR·관리자 우회 경로 차단은 V3까지 적용해야 반영됩니다.
@@ -18,7 +18,9 @@ Android는 Supabase Auth·Data API·Storage를 사용하고 Spring 서버는 같
 
 1. 현재 스키마와 Flyway 이력을 담당자가 확인합니다.
 2. 변경 구문을 검토하고 서버를 시작하여 아직 적용하지 않은 버전만 실행합니다.
-3. 확인 SQL로 V1·V2·V3 성공과 권한을 점검합니다.
+3. 확인 SQL로 V1·V2·V3·V4 성공과 권한을 점검합니다.
+
+V4는 예약 날짜 합의, 거래 보관, 채팅방 숨김, 회원별 알림과 닉네임 수정 RPC를 추가합니다. SQL Editor 적용 방법과 앱 변경은 [1.3 기능 변경 안내](../../docs/20261005-feature-update.md)를 참고하세요.
 
 **기존 DB에 초기 `schema.sql` 전체를 다시 실행하지 않습니다.** 특히 V3 이후 초기 함수·권한을 덮어쓰면 차단한 데모 결제·로컬 QR·기존 관리자 RPC가 다시 허용될 수 있습니다.
 

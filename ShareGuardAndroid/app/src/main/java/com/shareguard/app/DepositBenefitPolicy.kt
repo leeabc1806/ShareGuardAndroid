@@ -11,5 +11,5 @@ object DepositBenefitPolicy {
     }
 
     fun adjustedDeposit(baseDeposit: Int, trustScore: Int): Int =
-        baseDeposit * (100 - discountPercent(trustScore)) / 100
+        (baseDeposit.toLong() * (100 - discountPercent(trustScore)) / 100).toInt()
 }

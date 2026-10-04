@@ -8,7 +8,7 @@ plugins {
 }
 
 val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
+    val file = rootProject.file(providers.gradleProperty("shareguardConfig").getOrElse("local.properties"))
     if (file.exists()) {
         file.inputStream().use(::load)
     }
@@ -51,8 +51,8 @@ android {
         applicationId = "com.shareguard.app"
         minSdk = 26
         targetSdk = 33
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
 
         buildConfigField("String", "SUPABASE_URL", buildConfigString("SUPABASE_URL"))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString("SUPABASE_PUBLISHABLE_KEY"))
@@ -77,9 +77,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
-    testImplementation("junit:junit:4.13.2")
-    // JVM tests must use a real JSON implementation rather than Android's stub methods.
-    testImplementation("org.json:json:20240303")
 }
 
 // Some Windows workspace folders mark generated directories as read-only.

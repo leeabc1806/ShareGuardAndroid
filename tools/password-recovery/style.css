@@ -1,0 +1,25 @@
+:root { color-scheme: light; font-family: "Malgun Gothic", system-ui, sans-serif; color: #172337; background: #f3f6fb; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 64px 20px; }
+.card { max-width: 510px; margin: 0 auto; padding: 36px; border: 1px solid #e2e8f0; border-radius: 20px; background: white; box-shadow: 0 12px 40px #193b6510; }
+.brand { margin: 0 0 28px; font-size: 18px; font-weight: 800; color: #315dd5; }
+h1 { margin: 0 0 12px; font-size: 27px; letter-spacing: -0.7px; }
+h2 { font-size: 16px; margin-top: 24px; }
+.intro, li { font-size: 14px; line-height: 1.8; }
+.intro, .hint, .footer { color: #5b687d; }
+#status { padding: 15px; margin: 24px 0; border-radius: 10px; background: #eef3ff; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+#status[data-kind="error"] { color: #a12828; background: #fff0ef; }
+#status[data-kind="success"] { color: #146044; background: #edf9f2; }
+.account { font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+label { display: block; font-size: 14px; font-weight: 700; margin: 20px 0 9px; }
+input { width: 100%; border: 1px solid #c6d1df; border-radius: 9px; padding: 13px; font: inherit; }
+input:focus { outline: 3px solid #315dd533; border-color: #315dd5; }
+button { width: 100%; margin-top: 26px; padding: 14px; background: #315dd5; border: 0; border-radius: 9px; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+button:focus-visible { outline: 3px solid #97b0f4; outline-offset: 3px; }
+.hint { margin: 8px 0 0; font-size: 12px; line-height: 1.7; }
+ol { padding-left: 21px; }
+li { margin-bottom: 10px; }
+.footer { margin: 30px 0 0; padding-top: 20px; border-top: 1px solid #e8edf5; font-size: 12px; line-height: 1.7; }
+[hidden] { display: none !important; }
+@media (max-width: 540px) { body { padding: 24px 14px; } .card { padding: 26px 22px; } }

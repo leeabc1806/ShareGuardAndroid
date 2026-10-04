@@ -32,7 +32,7 @@ class LocalServerStartupTest {
             HttpResponse.BodyHandlers.ofString());
         assertEquals(200, response.statusCode());
         assertTrue(response.body().contains("\"status\":\"UP\""));
-        assertEquals(3, jdbc.queryForObject("select count(*) from public.flyway_schema_history where version in ('1','2','3') and success", Integer.class));
+        assertEquals(4, jdbc.queryForObject("select count(*) from public.flyway_schema_history where version in ('1','2','3','4') and success", Integer.class));
     }
 
     @Test

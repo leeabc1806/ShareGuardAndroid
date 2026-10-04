@@ -34,6 +34,7 @@ data class RemoteItem(
     val address: String,
     val latitude: Double?,
     val longitude: Double?,
+    val imagePaths: List<String> = emptyList(),
     val status: String = "active"
 )
 
@@ -97,10 +98,23 @@ data class RemoteReport(
     val status: String
 )
 
+data class RemoteChatRoom(val id: String, val reservationId: String, val hidden: Boolean, val lastBody: String, val unreadCount: Int)
+data class RemoteDateRequest(val id: String, val requestedBy: String, val startDate: String, val endDate: String, val rentalFee: Int)
+data class RemoteNotification(val id: Long, val kind: String, val title: String, val body: String, val reservationId: String?, val createdAt: String, val unread: Boolean)
+
 class SupabaseRestClient(
     private val baseUrl: String,
     private val publishableKey: String
 ) {
+    private val itemSelect = "id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude,status,item_images(storage_path,sort_order)"
+
+    fun itemImageUrl(path: String): String = baseUrl.trimEnd('/') +
+        "/storage/v1/object/public/item-images/" + path.split('/').joinToString("/") { Uri.encode(it) }
+
+    fun updateDisplayName(name: String, token: String) {
+        require(name.trim().length in 2..30) { "닉네임은 2~30자로 입력하세요." }
+        rpc("update_my_display_name", JSONObject().put("p_display_name", name.trim()), token)
+    }
     val isConfigured: Boolean =
         baseUrl.startsWith("https://") && publishableKey.startsWith("sb_publishable_")
 
@@ -188,7 +202,7 @@ class SupabaseRestClient(
         }
         val filter = if (itemIds == null) "&status=eq.active" else "&id=in.(${itemIds.distinct().joinToString(",")})"
         val response = request(
-            "/rest/v1/items?select=id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude,status" +
+            "/rest/v1/items?select=$itemSelect" +
                 "$filter&order=created_at.desc",
             "GET",
             accessToken = accessToken
@@ -209,13 +223,80 @@ class SupabaseRestClient(
                 address = row.optString("address", "거래 위치 협의"),
                 latitude = row.optNullableDouble("latitude"),
                 longitude = row.optNullableDouble("longitude"),
-                status = row.getString("status")
+                imagePaths = row.imagePaths(),
+                status = row.optString("status", "active")
             )
         }
     }
 
+    fun fetchItemsByIds(ids: Collection<String>, token: String): List<RemoteItem> = ids.distinct().chunked(40).flatMap { batch ->
+        val response = request("/rest/v1/items?select=$itemSelect&id=in.(${batch.joinToString(",") { Uri.encode(it) }})", "GET", accessToken = token)
+        check(response.isSuccessful) { response.errorMessage() }
+        val rows = JSONArray(response.body)
+        (0 until rows.length()).map { index -> rows.getJSONObject(index).let { row ->
+            RemoteItem(row.getString("id"), row.getString("owner_id"), row.getString("title"), row.getString("category"), row.optString("description"), row.getInt("daily_price"), row.getInt("deposit"), row.getString("address"), row.optNullableDouble("latitude"), row.optNullableDouble("longitude"), row.imagePaths(), row.optString("status", "active"))
+        } }
+    }
+
+    private fun JSONObject.imagePaths(): List<String> {
+        val images = optJSONArray("item_images") ?: return emptyList()
+        return (0 until images.length()).map { images.getJSONObject(it) }.sortedBy { it.optInt("sort_order") }.map { it.getString("storage_path") }
+    }
+
+    fun removeReservation(id: String, token: String) { rpc("remove_rental_reservation", JSONObject().put("p_reservation_id", id), token) }
+
+    fun fetchArchivedReservations(token: String): Set<String> {
+        val response = request("/rest/v1/reservation_archives?select=reservation_id", "GET", accessToken = token)
+        check(response.isSuccessful) { response.errorMessage() }
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { rows.getJSONObject(it).getString("reservation_id") }.toSet()
+    }
+
+    fun proposeDates(id: String, start: String, end: String, token: String) {
+        rpc("propose_reservation_dates", JSONObject().put("p_reservation_id", id).put("p_start_date", start).put("p_end_date", end), token)
+    }
+
+    fun respondDates(id: String, accept: Boolean, token: String) {
+        rpc("respond_reservation_dates", JSONObject().put("p_request_id", id).put("p_accept", accept), token)
+    }
+
+    fun fetchDateRequests(reservationId: String, token: String): List<RemoteDateRequest> {
+        val response = request("/rest/v1/reservation_date_requests?select=*&reservation_id=eq.${Uri.encode(reservationId)}&status=eq.pending", "GET", accessToken = token)
+        check(response.isSuccessful) { response.errorMessage() }
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { rows.getJSONObject(it).let { r ->
+            RemoteDateRequest(r.getString("id"), r.getString("requested_by"), r.getString("start_date"), r.getString("end_date"), r.getInt("rental_fee"))
+        } }
+    }
+
+    fun fetchChatRooms(token: String): List<RemoteChatRoom> {
+        val rows = JSONArray(rpc("list_my_chat_rooms", JSONObject(), token).body)
+        return (0 until rows.length()).map { rows.getJSONObject(it).let { r ->
+            RemoteChatRoom(r.getString("id"), r.getString("reservation_id"), !r.isNull("hidden_at"), r.optString("last_body", "").takeUnless { it == "null" }.orEmpty(), r.optInt("unread_count"))
+        } }
+    }
+
+    fun hideChatRoom(id: String, token: String) { rpc("hide_chat_room", JSONObject().put("p_room_id", id), token) }
+
+    fun fetchNotifications(token: String, afterId: Long? = null): List<RemoteNotification> {
+        val query = if (afterId == null) "order=id.desc&limit=100" else "id=gt.$afterId&order=id.asc&limit=100"
+        val response = request("/rest/v1/app_notifications?select=*&$query", "GET", accessToken = token)
+        check(response.isSuccessful) { response.errorMessage() }
+        val rows = JSONArray(response.body)
+        return (0 until rows.length()).map { rows.getJSONObject(it).let { r ->
+            RemoteNotification(r.getLong("id"), r.getString("kind"), r.getString("title"), r.getString("body"), r.optString("reservation_id").takeUnless { it == "null" }, r.getString("created_at"), r.isNull("read_at"))
+        } }
+    }
+
+    fun markNotificationsRead(ids: List<Long>, token: String) {
+        if (ids.isEmpty()) return
+        val response = request("/rest/v1/app_notifications?id=in.(${ids.joinToString(",")})", "PATCH", JSONObject().put("read_at", java.time.Instant.now().toString()), token)
+        check(response.isSuccessful) { response.errorMessage() }
+    }
+
     fun insertItem(item: NewRemoteItem, accessToken: String): RemoteItem {
         val payload = JSONObject()
+            .put("status", "hidden")
             .put("title", item.title)
             .put("category", item.category)
             .put("description", item.description)
@@ -290,6 +371,11 @@ class SupabaseRestClient(
         )
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
         if (JSONArray(response.body).length() == 0) throw IllegalStateException("게시물을 찾지 못했거나 삭제 권한이 없습니다.")
+    }
+
+    fun publishItem(itemId: String, token: String) {
+        val response = request("/rest/v1/items?id=eq.${Uri.encode(itemId)}", "PATCH", JSONObject().put("status", "active"), token)
+        check(response.isSuccessful) { response.errorMessage() }
     }
 
     fun uploadItemImage(
@@ -387,25 +473,11 @@ class SupabaseRestClient(
         itemId: String,
         startDate: String,
         endDate: String,
-        rentalFee: Int,
-        deposit: Int,
         accessToken: String
     ): RemoteReservation {
-        val payload = JSONObject()
-            .put("item_id", itemId)
-            .put("start_date", startDate)
-            .put("end_date", endDate)
-            .put("rental_fee", rentalFee)
-            .put("deposit", deposit)
-        val response = request(
-            "/rest/v1/reservations",
-            "POST",
-            payload,
-            accessToken,
-            mapOf("Prefer" to "return=representation")
-        )
-        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
-        return JSONArray(response.body).getJSONObject(0).toRemoteReservation()
+        val response = rpc("create_rental_reservation", JSONObject().put("p_item_id", itemId)
+            .put("p_start_date", startDate).put("p_end_date", endDate), accessToken)
+        return JSONObject(response.body).toRemoteReservation()
     }
 
     fun approveReservation(reservationId: String, accessToken: String): RemoteContract {
@@ -751,13 +823,13 @@ class SupabaseRestClient(
         val isSuccessful: Boolean get() = status in 200..299
 
         fun errorMessage(): String {
-            if (body.isBlank()) return "Supabase 요청 실패 (HTTP $status)"
+            if (body.isBlank()) {
+                return "Supabase 요청 실패 (HTTP $status)"
+            }
             return runCatching {
                 val json = JSONObject(body)
-                json.optString("msg")
-                    .ifBlank { json.optString("message") }
-                    .ifBlank { json.optString("error_description") }
-                    .ifBlank { body }
+                listOf("msg", "message", "error_description")
+                    .map { json.optString(it) }.firstOrNull { it.isNotBlank() } ?: body
             }.getOrDefault(body)
         }
     }
