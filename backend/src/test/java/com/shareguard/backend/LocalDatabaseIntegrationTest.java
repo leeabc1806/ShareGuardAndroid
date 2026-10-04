@@ -89,6 +89,18 @@ class LocalDatabaseIntegrationTest {
     }
 
     @Test
+    void flywayHistoryIsHiddenFromApiRolesButStillReadableByFlywayOwner() {
+        assertTrue(jdbc.queryForObject("select relrowsecurity from pg_class where oid = 'public.flyway_schema_history'::regclass", Boolean.class));
+        assertFalse(jdbc.queryForObject("select relforcerowsecurity from pg_class where oid = 'public.flyway_schema_history'::regclass", Boolean.class));
+        for (String role : new String[] {"anon", "authenticated", "service_role"}) {
+            assertFalse(jdbc.queryForObject(
+                "select has_table_privilege(?, 'public.flyway_schema_history', 'SELECT')", Boolean.class, role));
+        }
+        assertEquals(1, jdbc.queryForObject(
+            "select count(*) from public.flyway_schema_history where version = '7' and success", Integer.class));
+    }
+
+    @Test
     void realDatabaseQrRoundTripRejectsReuse() {
         withTrade(trade -> {
             var qr = new QrTokenService(jdbc, 300);

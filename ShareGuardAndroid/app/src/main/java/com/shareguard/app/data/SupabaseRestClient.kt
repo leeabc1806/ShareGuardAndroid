@@ -78,6 +78,17 @@ data class RemoteChatMessage(
     val createdAt: String
 )
 
+data class ChatMedia(val kind: String, val path: String) {
+    companion object {
+        private val encoded = Regex("^\\[\\[shareguard-media:(image|video):([A-Za-z0-9_-]+/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+\\.(?:jpg|png|webp|mp4|webm|mov))]]$")
+        fun fromBody(body: String): ChatMedia? = encoded.matchEntire(body)?.let {
+            ChatMedia(it.groupValues[1], it.groupValues[2])
+        }
+    }
+
+    fun asBody(): String = "[[shareguard-media:$kind:$path]]"
+}
+
 data class RemoteReport(
     val id: String,
     val reservationId: String,
@@ -274,9 +285,11 @@ class SupabaseRestClient(
             "/rest/v1/items?id=eq.$itemId",
             "PATCH",
             JSONObject().put("status", "hidden"),
-            accessToken
+            accessToken,
+            mapOf("Prefer" to "return=representation")
         )
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+        if (JSONArray(response.body).length() == 0) throw IllegalStateException("게시물을 찾지 못했거나 삭제 권한이 없습니다.")
     }
 
     fun uploadItemImage(
@@ -512,6 +525,58 @@ class SupabaseRestClient(
             mapOf("Prefer" to "return=minimal")
         )
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun sendChatMedia(roomId: String, userId: String, bytes: ByteArray, mimeType: String, accessToken: String): ChatMedia {
+        val format = when (mimeType) {
+            "image/jpeg" -> "image" to "jpg"
+            "image/png" -> "image" to "png"
+            "image/webp" -> "image" to "webp"
+            "video/mp4" -> "video" to "mp4"
+            "video/webm" -> "video" to "webm"
+            "video/quicktime" -> "video" to "mov"
+            else -> throw IllegalArgumentException("JPG·PNG·WEBP 사진 또는 MP4·WEBM·MOV 영상만 보낼 수 있습니다.")
+        }
+        require(bytes.isNotEmpty() && bytes.size <= 20 * 1024 * 1024) { "첨부파일은 20MB 이하여야 합니다." }
+        val media = ChatMedia(format.first, "$roomId/$userId/${UUID.randomUUID()}.${format.second}")
+        val upload = binaryRequest("/storage/v1/object/chat-media/${media.path}", "POST", bytes, mimeType, accessToken)
+        if (!upload.isSuccessful) throw IllegalStateException(upload.errorMessage())
+        try {
+            sendChatMessage(roomId, media.asBody(), accessToken)
+        } catch (error: Exception) {
+            // Avoid leaving an orphaned private file when the chat insert fails.
+            runCatching { request("/storage/v1/object/chat-media/${media.path}", "DELETE", accessToken = accessToken) }
+            throw error
+        }
+        return media
+    }
+
+    fun downloadChatMedia(media: ChatMedia, accessToken: String): ByteArray {
+        check(isConfigured) { "Supabase 연결이 설정되지 않았습니다." }
+        val connection = URL(baseUrl.trimEnd('/') + "/storage/v1/object/authenticated/chat-media/${media.path}").openConnection() as HttpURLConnection
+        return try {
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 30_000
+            connection.setRequestProperty("apikey", publishableKey)
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
+            if (connection.responseCode !in 200..299) {
+                val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                throw IllegalStateException("첨부파일을 열 수 없습니다. ${detail.take(120)}")
+            }
+            connection.inputStream.use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    require(output.size() + count <= 20 * 1024 * 1024) { "첨부파일이 너무 큽니다." }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+        } finally {
+            connection.disconnect()
+        }
     }
 
     fun createReview(

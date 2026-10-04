@@ -851,7 +851,8 @@ with check (exists (
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
     ('item-images', 'item-images', true, 10485760, array['image/jpeg', 'image/png', 'image/webp']),
-    ('condition-photos', 'condition-photos', false, 10485760, array['image/jpeg', 'image/png', 'image/webp'])
+    ('condition-photos', 'condition-photos', false, 10485760, array['image/jpeg', 'image/png', 'image/webp']),
+    ('chat-media', 'chat-media', false, 20971520, array['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime'])
 on conflict (id) do nothing;
 
 create policy item_images_storage_read on storage.objects
@@ -893,6 +894,58 @@ with check (bucket_id = 'condition-photos' and owner_id = (select auth.uid())::t
 create policy condition_photos_storage_delete on storage.objects
 for delete to authenticated
 using (bucket_id = 'condition-photos' and owner_id = (select auth.uid())::text);
+
+create policy chat_media_read_members on storage.objects
+for select to authenticated using (
+    bucket_id = 'chat-media' and exists (
+        select 1 from public.chat_room_members m
+        where m.room_id::text = (storage.foldername(name))[1]
+          and m.user_id = (select auth.uid())
+    )
+);
+create policy chat_media_insert_members on storage.objects
+for insert to authenticated with check (
+    bucket_id = 'chat-media'
+    and (storage.foldername(name))[2] = (select auth.uid())::text
+    and exists (
+        select 1 from public.chat_room_members m
+        where m.room_id::text = (storage.foldername(name))[1]
+          and m.user_id = (select auth.uid())
+    )
+);
+create policy chat_media_delete_own on storage.objects
+for delete to authenticated using (
+    bucket_id = 'chat-media' and owner_id = (select auth.uid())::text
+);
+
+-- Server-enforced pricing prevents a client from submitting an arbitrary discount.
+create or replace function private.set_reservation_quote()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare
+    item_price integer;
+    item_deposit integer;
+    borrower_trust integer;
+    discount_percent integer;
+begin
+    select daily_price, deposit into item_price, item_deposit
+    from public.items where id = new.item_id and status = 'active';
+    if not found then raise exception 'Item is not available'; end if;
+    select trust_score into borrower_trust from public.profiles where id = new.borrower_id;
+    if not found then raise exception 'Borrower profile not found'; end if;
+    discount_percent := case
+        when borrower_trust >= 900 then 10
+        when borrower_trust >= 800 then 7
+        when borrower_trust >= 700 then 5
+        when borrower_trust >= 600 then 3
+        else 0
+    end;
+    new.rental_fee := item_price * (new.end_date - new.start_date + 1);
+    new.deposit := item_deposit * (100 - discount_percent) / 100;
+    return new;
+end;
+$$;
+create trigger set_reservation_quote before insert on public.reservations
+for each row execute function private.set_reservation_quote();
 
 -- Keep profile rating, deal count, and trust score synchronized without an external API.
 create or replace function private.recalculate_profile_trust(p_user_id uuid)

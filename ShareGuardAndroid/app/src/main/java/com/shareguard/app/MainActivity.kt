@@ -2,6 +2,7 @@ package com.shareguard.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.content.Intent
 import android.content.SharedPreferences
@@ -33,7 +34,9 @@ import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.Switch
 import com.shareguard.app.data.AuthResult
+import com.shareguard.app.data.ChatMedia
 import com.shareguard.app.data.NewRemoteItem
 import com.shareguard.app.data.RemoteContract
 import com.shareguard.app.data.RemoteItem
@@ -222,6 +225,14 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var content: LinearLayout
     private lateinit var bottomNav: LinearLayout
+    private lateinit var mainScroll: ScrollView
+    private var chatComposer: LinearLayout? = null
+    private var chatInput: EditText? = null
+    private var chatMessagesView: LinearLayout? = null
+    private var chatDraft = ""
+    private var activeChatReservationId: String? = null
+    private var paymentRefreshInProgress = false
+    private var paymentLastRefreshedAt: String? = null
     private lateinit var supabase: SupabaseRestClient
     private val server by lazy { ServerApiClient(BuildConfig.SHAREGUARD_API_BASE_URL) }
     private var serverUser = User(2, "로그인 필요", "회원", false, 0, 0.0, 0, 0)
@@ -290,6 +301,7 @@ class MainActivity : Activity() {
     private val beforePhotoRequest = 7101
     private val afterPhotoRequest = 7102
     private val itemPhotoRequest = 7103
+    private val chatMediaRequest = 7104
 
     private val users = mutableListOf(
         User(1, "김민수", "대여자", true, 850, 4.9, 28, 120),
@@ -470,6 +482,10 @@ class MainActivity : Activity() {
             }
             return
         }
+        if (requestCode == chatMediaRequest) {
+            if (resultCode == RESULT_OK) data?.data?.let(::uploadChatMedia)
+            return
+        }
         if (resultCode != RESULT_OK || requestCode !in listOf(beforePhotoRequest, afterPhotoRequest)) return
         val uri = data?.data ?: return
         val token = sessionToken ?: return
@@ -567,7 +583,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(18), dp(16), dp(12))
         }
-        val scroll = ScrollView(this).apply {
+        mainScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(match, 0, 1f)
             addView(content)
         }
@@ -577,13 +593,18 @@ class MainActivity : Activity() {
             setPadding(dp(8), dp(6), dp(8), dp(6))
             background = rounded(Color.WHITE, 0)
         }
-        root.addView(scroll)
+        root.addView(mainScroll)
         root.addView(bottomNav, LinearLayout.LayoutParams(match, dp(66)))
         setContentView(root)
     }
 
     private fun render() {
         chatHandler.removeCallbacks(chatPoll)
+        if (screen == Screen.CHAT && chatDetailOpen) chatDraft = chatInput?.text?.toString() ?: chatDraft
+        chatComposer?.let(root::removeView)
+        chatComposer = null
+        chatInput = null
+        chatMessagesView = null
         content.removeAllViews()
         bottomNav.removeAllViews()
         if ((screen == Screen.DETAIL || (screen == Screen.CHAT && chatDetailOpen)) && items.none { it.id == selectedItemId }) {
@@ -604,7 +625,8 @@ class MainActivity : Activity() {
             return
         }
         val customScreen = screen in setOf(Screen.HOME, Screen.FILTER, Screen.MAP, Screen.DETAIL)
-        bottomNav.visibility = if (screen in setOf(Screen.FILTER, Screen.DETAIL, Screen.NOTIFICATIONS, Screen.ADMIN)) View.GONE else View.VISIBLE
+        bottomNav.visibility = if (screen in setOf(Screen.FILTER, Screen.DETAIL, Screen.NOTIFICATIONS, Screen.ADMIN) ||
+            screen == Screen.CHAT && chatDetailOpen) View.GONE else View.VISIBLE
         if (!customScreen) {
             renderHeader()
         }
@@ -640,7 +662,7 @@ class MainActivity : Activity() {
                 addView(textView(screen.subtitle, 12, false, muted).withTop(2))
             }, LinearLayout.LayoutParams(0, wrap, 1f))
             if (screen == Screen.PROFILE) addView(coloredButton("⚙", Color.rgb(245, 247, 251), text) {
-                toast("설정은 준비 중입니다.")
+                showSettings()
             }, LinearLayout.LayoutParams(dp(46), dp(46)))
         })
         if (screen in setOf(Screen.REGISTER, Screen.RESERVATIONS, Screen.CHAT)) {
@@ -650,7 +672,10 @@ class MainActivity : Activity() {
 
     private fun openScreen(target: Screen) {
         screen = target
-        if (target == Screen.CHAT) chatDetailOpen = false
+        if (target == Screen.CHAT) {
+            chatDetailOpen = false
+            chatDraft = ""
+        }
         render()
     }
 
@@ -1217,15 +1242,10 @@ class MainActivity : Activity() {
         return (500 + verified + deals + rating + safeHistory - disputes).coerceIn(0, 1000)
     }
 
-    private fun depositDiscountPercent(trustScore: Int): Int = when {
-        trustScore >= 900 -> 30
-        trustScore >= 800 -> 20
-        trustScore >= 700 -> 10
-        else -> 0
-    }
+    private fun depositDiscountPercent(trustScore: Int): Int = DepositBenefitPolicy.discountPercent(trustScore)
 
     private fun adjustedDeposit(baseDeposit: Int, trustScore: Int): Int =
-        baseDeposit * (100 - depositDiscountPercent(trustScore)) / 100
+        DepositBenefitPolicy.adjustedDeposit(baseDeposit, trustScore)
 
     private fun filteredItems(): List<Item> {
         val categoryFiltered = items.filter { item ->
@@ -1459,7 +1479,7 @@ class MainActivity : Activity() {
                         render()
                     }, LinearLayout.LayoutParams(0, dp(42), 1f))
                     addView(space(8))
-                    addView(button("삭제", dangerStyle = true) { deleteItem(item) }, LinearLayout.LayoutParams(0, dp(42), 1f))
+                    addView(button("삭제", dangerStyle = true) { confirmDeleteItem(item) }, LinearLayout.LayoutParams(0, dp(42), 1f))
                 }.withTop(12))
             }.withTop(10))
         }
@@ -1542,8 +1562,9 @@ class MainActivity : Activity() {
                         screen = Screen.FEEDBACK
                         render()
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
-                    contract.status == ContractStatus.DISPUTED -> addView(button("관리자 검토", secondary = true) {
-                        screen = Screen.ADMIN
+                    contract.status == ContractStatus.DISPUTED -> addView(button("분쟁 상태 확인", secondary = true) {
+                        activeContractId = contract.id
+                        screen = Screen.FEEDBACK
                         render()
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
                 }
@@ -1559,8 +1580,10 @@ class MainActivity : Activity() {
             addView(button("채팅으로 일정 조율", secondary = true) {
                 selectedItemId = item.id
                 activeContractId = contract?.id
+                activeChatReservationId = reservation.remoteId
                 activeChatRoomId = null
                 chatMessages.clear()
+                chatDraft = ""
                 chatDetailOpen = true
                 screen = Screen.CHAT
                 loadRemoteChat()
@@ -1652,8 +1675,10 @@ class MainActivity : Activity() {
                         setOnClickListener {
                             selectedItemId = item.id
                             activeContractId = contracts.find { it.reservationId == reservation.id }?.id
+                            activeChatReservationId = reservation.remoteId
                             activeChatRoomId = null
                             chatMessages.clear()
+                            chatDraft = ""
                             chatDetailOpen = true
                             loadRemoteChat()
                             render()
@@ -1669,6 +1694,7 @@ class MainActivity : Activity() {
                 content.addView(card().apply {
                     setOnClickListener {
                         selectedItemId = item.id
+                        activeChatReservationId = null
                         chatDetailOpen = true
                         render()
                     }
@@ -1690,7 +1716,8 @@ class MainActivity : Activity() {
         }
 
         val chatItem = selectedItem()
-        val chatTrade = activeReservation()?.takeIf { it.itemId == chatItem.id }
+        val chatTrade = reservations.find { it.remoteId != null && it.remoteId == activeChatReservationId }
+            ?: activeReservation()?.takeIf { it.itemId == chatItem.id }
             ?: reservations.find { it.itemId == chatItem.id }
         val partnerId = if (chatItem.remoteOwnerId == sessionUserId) chatTrade?.remoteBorrowerId else chatItem.remoteOwnerId
         val partner = if (supabase.isConfigured) ownerProfiles[partnerId]?.toUser()
@@ -1698,6 +1725,7 @@ class MainActivity : Activity() {
         content.addView(row {
             addView(coloredButton("‹", Color.rgb(245, 247, 251), text) {
                 chatDetailOpen = false
+                chatDraft = ""
                 render()
             }, LinearLayout.LayoutParams(dp(44), dp(44)))
             addView(column {
@@ -1713,41 +1741,215 @@ class MainActivity : Activity() {
                     addView(textView(selectedItem().title, 14, true, text))
                     addView(textView("${money(selectedItem().price)} / 일 · 보증금 ${money(selectedItem().deposit)}", 11, false, muted).withTop(3))
                 }.apply { setPadding(dp(10), 0, 0, 0) }, LinearLayout.LayoutParams(0, wrap, 1f))
-                addView(button("예약하기") { createReservation(selectedItem()) }, LinearLayout.LayoutParams(dp(92), dp(42)))
+                if (chatItem.remoteOwnerId != sessionUserId) {
+                    addView(button("예약하기") { showChatReservationDialog(chatItem) }, LinearLayout.LayoutParams(dp(92), dp(42)))
+                }
             })
         }.withTop(10))
         content.addView(textView("오늘", 11, true, muted).apply { gravity = Gravity.CENTER }.withTop(14))
-        chatMessages.forEach { msg -> content.addView(chatBubble(msg).withTop(8)) }
-        listOf("내일 오전 10시", "역삼역 2번 출구", "3일 대여").forEach { suggestion ->
-            content.addView(textView("  $suggestion  ", 11, true, blue).apply {
-                setPadding(dp(8), dp(6), dp(8), dp(6))
-                background = rounded(Color.rgb(239, 237, 255), 12)
-            }.withTop(5))
+        chatMessagesView = column { }.also(content::addView)
+        updateChatMessages()
+        val input = EditText(this).apply {
+            hint = "메시지를 입력하세요"
+            setText(chatDraft)
+            textSize = 14f
+            minHeight = dp(48)
+            maxLines = 4
+            setPadding(dp(10), 0, dp(10), 0)
+            background = rounded(Color.WHITE, 8, line)
         }
-        val input = edit("메시지를 입력하세요")
-        content.addView(row {
+        chatInput = input
+        chatComposer = row {
             addView(input, LinearLayout.LayoutParams(0, dp(48), 1f))
             addView(space(8))
-            addView(coloredButton("➤", blue, Color.WHITE) {
-                val body = input.text.toString().trim()
-                if (body.isBlank()) return@coloredButton
-                val token = sessionToken
-                val roomId = activeChatRoomId
-                if (supabase.isConfigured && token != null && roomId != null) {
-                    Thread {
-                        val result = runCatching { supabase.sendChatMessage(roomId, body, token) }
-                        runOnUiThread {
-                            result.onSuccess { loadRemoteChat(); toast("메시지가 전송되었습니다.") }
-                                .onFailure { error -> toast("전송 실패: ${error.message ?: "채팅방 권한을 확인하세요."}") }
-                        }
-                    }.start()
-                } else {
-                    chatMessages.add(ChatMessage(true, body))
-                    render()
-                }
-            }, LinearLayout.LayoutParams(dp(50), dp(48)))
-        }.withTop(14))
+            addView(coloredButton("+", Color.rgb(245, 247, 251), text) { chooseChatMedia() }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            addView(space(8))
+            addView(coloredButton("➤", blue, Color.WHITE) { sendChatText(input) }, LinearLayout.LayoutParams(dp(50), dp(48)))
+        }.apply {
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setBackgroundColor(surface)
+        }
+        root.addView(chatComposer, 1, LinearLayout.LayoutParams(match, wrap))
         if (supabase.isConfigured && sessionToken != null) chatHandler.postDelayed(chatPoll, 5_000L)
+    }
+
+    private fun updateChatMessages() {
+        val container = chatMessagesView ?: return
+        container.removeAllViews()
+        chatMessages.forEach { msg -> container.addView(chatBubble(msg).withTop(8)) }
+        mainScroll.post { mainScroll.smoothScrollTo(0, content.height) }
+    }
+
+    private fun sendChatText(input: EditText) {
+        val body = input.text.toString().trim()
+        if (body.isBlank()) return
+        val token = sessionToken
+        val roomId = activeChatRoomId
+        if (supabase.isConfigured) {
+            if (token == null || roomId == null) {
+                toast("채팅방을 연결 중입니다. 잠시 후 다시 시도해주세요.")
+                loadRemoteChat()
+                return
+            }
+            Thread {
+                val result = runCatching { supabase.sendChatMessage(roomId, body, token) }
+                runOnUiThread {
+                    if (sessionToken != token || activeChatRoomId != roomId) return@runOnUiThread
+                    result.onSuccess {
+                        if (chatInput === input && input.text.toString().trim() == body) {
+                            input.text.clear()
+                            chatDraft = ""
+                        }
+                        loadRemoteChat()
+                    }.onFailure { error -> toast("전송 실패: ${error.message ?: "채팅방 권한을 확인하세요."}") }
+                }
+            }.start()
+        } else {
+            chatMessages.add(ChatMessage(true, body))
+            input.text.clear()
+            chatDraft = ""
+            updateChatMessages()
+        }
+    }
+
+    private fun chooseChatMedia() {
+        if (supabase.isConfigured && (activeChatRoomId == null || sessionToken == null)) {
+            toast("채팅방을 연결 중입니다. 잠시 후 다시 시도해주세요.")
+            return
+        }
+        if (!supabase.isConfigured) {
+            toast("사진·영상 전송은 로그인한 거래에서 사용할 수 있습니다.")
+            return
+        }
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "video/quicktime"))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(picker, chatMediaRequest)
+    }
+
+    private fun uploadChatMedia(uri: Uri) {
+        val token = sessionToken ?: return
+        val roomId = activeChatRoomId ?: return
+        val userId = sessionUserId ?: return
+        val mimeType = contentResolver.getType(uri).orEmpty()
+        toast("첨부파일을 보내는 중입니다.")
+        Thread {
+            val result = runCatching {
+                val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        require(output.size() + count <= 20 * 1024 * 1024) { "첨부파일은 20MB 이하여야 합니다." }
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: throw IllegalStateException("선택한 파일을 읽을 수 없습니다.")
+                supabase.sendChatMedia(roomId, userId, bytes, mimeType, token)
+            }
+            runOnUiThread {
+                if (sessionToken != token || activeChatRoomId != roomId) return@runOnUiThread
+                result.onSuccess { loadRemoteChat() }
+                    .onFailure { error -> toast("첨부파일 전송 실패: ${error.message ?: "파일과 권한을 확인하세요."}") }
+            }
+        }.start()
+    }
+
+    private fun openChatMedia(media: ChatMedia) {
+        val token = sessionToken ?: return
+        toast("첨부파일을 여는 중입니다.")
+        Thread {
+            val result = runCatching { supabase.downloadChatMedia(media, token) }
+            runOnUiThread {
+                if (sessionToken != token) return@runOnUiThread
+                result.onSuccess { bytes ->
+                    if (media.kind == "image") {
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bitmap == null) {
+                            toast("사진 형식을 읽을 수 없습니다.")
+                        } else {
+                            val preview = ImageView(this).apply {
+                                setImageBitmap(bitmap)
+                                adjustViewBounds = true
+                                scaleType = ImageView.ScaleType.FIT_CENTER
+                            }
+                            AlertDialog.Builder(this).setView(preview).setPositiveButton("닫기", null).show()
+                        }
+                    } else {
+                        runCatching {
+                            val dir = File(cacheDir, "chat_media").apply { mkdirs() }
+                            val filename = media.path.substringAfterLast('/')
+                            val file = File(dir, filename).apply { writeBytes(bytes) }
+                            val viewUri = FileProvider.getUriForFile(this, "$packageName.files", file)
+                            val mime = when (file.extension.lowercase()) {
+                                "webm" -> "video/webm"
+                                "mov" -> "video/quicktime"
+                                else -> "video/mp4"
+                            }
+                            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(viewUri, mime)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            })
+                        }.onFailure { toast("영상을 재생할 앱을 확인해주세요.") }
+                    }
+                }.onFailure { error -> toast("첨부파일 열기 실패: ${error.message ?: "권한을 확인하세요."}") }
+            }
+        }.start()
+    }
+
+    private fun showChatReservationDialog(item: Item) {
+        var start = reservationStartDate
+        var end = reservationEndDate
+        val panel = column { setPadding(dp(18), dp(8), dp(18), dp(8)) }
+        val startButton = button("시작  $start", secondary = true) { }
+        val endButton = button("종료  $end", secondary = true) { }
+        val amount = textView("", 13, true, text)
+        fun updateSummary() {
+            startButton.text = "시작  $start"
+            endButton.text = "종료  $end"
+            val days = rentalDays(start, end)
+            val deposit = adjustedDeposit(item.deposit, calculateTrustScore(currentUser()))
+            amount.text = "${days}일 · 대여료 ${money(item.price * days)} · 적용 보증금 ${money(deposit)}"
+        }
+        startButton.setOnClickListener {
+            DatePickerDialog(this, { _, year, month, day ->
+                start = LocalDate.of(year, month + 1, day)
+                if (end.isBefore(start)) end = start
+                updateSummary()
+            }, start.year, start.monthValue - 1, start.dayOfMonth).apply {
+                datePicker.minDate = System.currentTimeMillis() - 1_000L
+            }.show()
+        }
+        endButton.setOnClickListener {
+            DatePickerDialog(this, { _, year, month, day ->
+                val selected = LocalDate.of(year, month + 1, day)
+                if (selected.isBefore(start)) toast("종료일은 시작일보다 빠를 수 없습니다.")
+                else {
+                    end = selected
+                    updateSummary()
+                }
+            }, end.year, end.monthValue - 1, end.dayOfMonth).apply {
+                datePicker.minDate = System.currentTimeMillis() - 1_000L
+            }.show()
+        }
+        panel.addView(startButton.withTop(8))
+        panel.addView(endButton.withTop(8))
+        panel.addView(amount.withTop(12))
+        updateSummary()
+        AlertDialog.Builder(this)
+            .setTitle("채팅에서 예약")
+            .setView(panel)
+            .setNegativeButton("취소", null)
+            .setPositiveButton("대여 신청") { _, _ ->
+                reservationStartDate = start
+                reservationEndDate = end
+                createReservation(item)
+            }
+            .show()
     }
 
     private fun renderQr() {
@@ -1904,10 +2106,11 @@ class MainActivity : Activity() {
             }.withTop(9))
         }
         content.addView(card().apply {
+            val prefs = getSharedPreferences("shareguard_settings", MODE_PRIVATE)
             addView(textView("알림 설정", 16, true, text))
-            addView(metric("거래 상태 알림", "켜짐").withTop(8))
-            addView(metric("채팅 알림", "켜짐"))
-            addView(metric("혜택 및 마케팅", "꺼짐"))
+            addView(metric("거래 상태 알림", if (prefs.getBoolean("trade_notifications", true)) "켜짐" else "꺼짐").withTop(8))
+            addView(metric("채팅 알림", if (prefs.getBoolean("chat_notifications", true)) "켜짐" else "꺼짐"))
+            addView(metric("혜택 및 마케팅", if (prefs.getBoolean("marketing_notifications", false)) "켜짐" else "꺼짐"))
         }.withTop(16))
     }
 
@@ -1929,7 +2132,7 @@ class MainActivity : Activity() {
             addView(metric("본인 인증 점수", if (user.verified) "+150" else "+0"))
             addView(metric("거래·평점·무사고", "+${(user.deals * 8).coerceAtMost(160) + (((user.rating - 3.0).coerceAtLeast(0.0)) * 80).roundToInt().coerceAtMost(160) + (user.noAccidentDays / 2).coerceAtMost(120)}"))
             addView(metric("분쟁 감점", "-${reports.count { it.open } * 80}"))
-            addView(metric("보증금 혜택", if (discount > 0) "보증금 $discount% 감면" else "신뢰 지수 700부터 적용"))
+            addView(metric("보증금 혜택", if (discount > 0) "보증금 $discount% 감면 (최대 10%)" else "신뢰 지수 600부터 적용"))
             if (!user.verified) {
                 addView(button("본인 인증 시작") {
                     verificationStep = VerificationStep.CONSENT
@@ -1948,9 +2151,8 @@ class MainActivity : Activity() {
                 addView(metric("토큰 관리", "자동 갱신"))
             }.withTop(12))
         }
-        content.addView(card(Color.rgb(248, 248, 255)).apply {
+        if (BuildConfig.DEBUG && user.role == "관리자") content.addView(card(Color.rgb(248, 248, 255)).apply {
             addView(textView("운영자 도구", 16, true, text))
-            addView(textView("신고 접수 현황과 보증금 분쟁 처리 화면을 확인합니다.", 12, false, muted).withTop(3))
             addView(button("관리자 화면 열기", secondary = true) {
                 screen = Screen.ADMIN
                 selectedAdminReportId = null
@@ -1964,10 +2166,73 @@ class MainActivity : Activity() {
             addView(textView("카메라 상태가 좋고 약속 시간이 정확했어요.", 14, false, text).withTop(4))
             addView(textView("지수 · 2일 전", 12, false, muted).withTop(2))
         }.withTop(10))
+        addMyPostsToProfile()
+    }
+
+    private fun showSettings() {
+        val prefs = getSharedPreferences("shareguard_settings", MODE_PRIVATE)
+        val panel = column {
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            listOf(
+                Triple("앱 내 거래 알림", "trade_notifications", true),
+                Triple("앱 내 채팅 알림", "chat_notifications", true),
+                Triple("혜택 및 마케팅", "marketing_notifications", false)
+            ).forEach { (label, key, defaultValue) ->
+                addView(Switch(this@MainActivity).apply {
+                    text = label
+                    textSize = 14f
+                    isChecked = prefs.getBoolean(key, defaultValue)
+                    setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean(key, checked).apply() }
+                }.withTop(10))
+            }
+            addView(textView("이 설정은 앱 안의 알림 목록에 적용됩니다.", 11, false, muted).withTop(12))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("설정")
+            .setView(panel)
+            .setNegativeButton("닫기", null)
+            .apply {
+                if (!sessionToken.isNullOrBlank()) setPositiveButton("로그아웃") { _, _ -> signOut() }
+            }
+            .show()
+    }
+
+    private fun addMyPostsToProfile() {
+        val mine = items.filter { it.available && (it.remoteOwnerId == sessionUserId && sessionUserId != null ||
+            !supabase.isConfigured && it.ownerId == currentUser().id) }
+        content.addView(sectionTitle("내 게시물", "등록한 물품을 확인하거나 삭제합니다.").withTop(16))
+        if (mine.isEmpty()) {
+            content.addView(empty("등록한 게시물이 없습니다.").withTop(8))
+            return
+        }
+        mine.forEach { item ->
+            content.addView(card().apply {
+                addView(textView(item.title, 15, true, text))
+                addView(textView("${money(item.price)} / 일", 12, false, muted).withTop(4))
+                addView(row {
+                    addView(button("보기", secondary = true) {
+                        selectedItemId = item.id
+                        screen = Screen.DETAIL
+                        render()
+                    }, LinearLayout.LayoutParams(0, dp(42), 1f))
+                    addView(space(8))
+                    addView(button("삭제", dangerStyle = true) { confirmDeleteItem(item) }, LinearLayout.LayoutParams(0, dp(42), 1f))
+                }.withTop(8))
+            }.withTop(8))
+        }
+    }
+
+    private fun confirmDeleteItem(item: Item) {
+        AlertDialog.Builder(this)
+            .setTitle("게시물 삭제")
+            .setMessage("'${item.title}'을(를) 목록에서 숨길까요? 진행 중인 거래 기록은 유지됩니다.")
+            .setNegativeButton("취소", null)
+            .setPositiveButton("삭제") { _, _ -> deleteItem(item) }
+            .show()
     }
 
     private fun renderAdmin() {
-        if (supabase.isConfigured && (!profileLoaded || serverUser.role != "관리자")) {
+        if (!BuildConfig.DEBUG || (supabase.isConfigured && (!profileLoaded || serverUser.role != "관리자"))) {
             content.addView(empty("관리자 계정에서 사용할 수 있습니다.").withTop(14))
             return
         }
@@ -2440,6 +2705,7 @@ class MainActivity : Activity() {
                 addView(textView("${user.trust} / 1000", 28, true, blue).withTop(14))
                 addView(metric("완료한 거래", "${user.deals}건"))
                 addView(metric("평균 평점", if (user.rating > 0) user.rating.toString() else "등록된 평점 없음"))
+                addView(metric("보증금 혜택", "신뢰점수 자동 ${depositDiscountPercent(user.trust)}% 감면 (최대 10%)"))
             } else {
                 addView(textView(profileError ?: "프로필을 불러오는 중입니다.", 14, false, muted).withTop(8))
             }
@@ -2449,12 +2715,13 @@ class MainActivity : Activity() {
             }.withTop(12))
             if (profileLoaded && !user.verified) addView(button("본인 인증 시작") { startPassVerification() }.withTop(8))
             addView(button("로그아웃", secondary = true) { signOut() }.withTop(8))
-            if (profileLoaded && user.role == "관리자") addView(button("관리자 화면", secondary = true) {
+            if (BuildConfig.DEBUG && profileLoaded && user.role == "관리자") addView(button("관리자 화면", secondary = true) {
                 screen = Screen.ADMIN
                 loadAdminReports()
                 render()
             }.withTop(8))
         })
+        addMyPostsToProfile()
         content.addView(sectionTitle("내 거래 이력", "참여한 예약과 거래 상태를 확인합니다.").withTop(16))
         val mine = reservations.filter { reservation ->
             reservation.remoteId != null && (reservation.remoteBorrowerId == sessionUserId ||
@@ -2664,7 +2931,8 @@ class MainActivity : Activity() {
     private fun loadRemoteChat() {
         val token = sessionToken ?: return
         if (screen != Screen.CHAT || !chatDetailOpen) return
-        val reservationId = activeReservation()?.takeIf { it.itemId == selectedItemId }?.remoteId
+        val reservationId = activeChatReservationId
+            ?: activeReservation()?.takeIf { it.itemId == selectedItemId }?.remoteId
             ?: reservations.firstOrNull { it.itemId == selectedItemId && it.remoteId != null }?.remoteId ?: return
         val chatItemId = selectedItemId
         Thread {
@@ -2675,15 +2943,18 @@ class MainActivity : Activity() {
                 roomId to messages
             }
             runOnUiThread {
-                if (sessionToken != token || selectedItemId != chatItemId || !chatDetailOpen) return@runOnUiThread
+                if (sessionToken != token || selectedItemId != chatItemId || activeChatReservationId != reservationId || !chatDetailOpen) return@runOnUiThread
                 result.onSuccess { (roomId, messages) ->
                     activeChatRoomId = roomId
-                    chatMessages.clear()
-                    messages.forEach { message ->
+                    val fresh = messages.map { message ->
                         val time = message.createdAt.takeIf { it.length >= 16 }?.substring(11, 16) ?: "방금"
-                        chatMessages.add(ChatMessage(message.senderId == sessionUserId, message.body, time, message.senderId == sessionUserId))
+                        ChatMessage(message.senderId == sessionUserId, message.body, time, message.senderId == sessionUserId)
                     }
-                    if (screen == Screen.CHAT) render()
+                    if (fresh != chatMessages) {
+                        chatMessages.clear()
+                        chatMessages.addAll(fresh)
+                        if (screen == Screen.CHAT) updateChatMessages()
+                    }
                 }
             }
         }.start()
@@ -3046,9 +3317,13 @@ class MainActivity : Activity() {
         val token = sessionToken ?: return
         if (!server.isConfigured) {
             paymentStateError = "결제 서버 연결을 확인해주세요."
+            paymentRefreshInProgress = false
+            if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
             return
         }
         val ids = reservations.mapNotNull { it.remoteId }.distinct()
+        paymentRefreshInProgress = true
+        if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
         val readVersion = ++paymentReadVersion
         Thread {
             val results = ids.associateWith { id -> runCatching { server.payment(id, token) } }
@@ -3057,6 +3332,8 @@ class MainActivity : Activity() {
                 paymentStates.clear()
                 results.forEach { (id, result) -> result.getOrNull()?.let { paymentStates[id] = it } }
                 paymentStateError = if (results.values.any { it.isFailure }) "일부 결제 상태를 확인하지 못했습니다. 새로고침해주세요." else null
+                paymentRefreshInProgress = false
+                paymentLastRefreshedAt = java.time.LocalTime.now().toString().take(8)
                 contracts.forEach { contract ->
                     val id = reservations.find { it.id == contract.reservationId }?.remoteId
                     contract.refunded = paymentStates[id]?.refunded == true
@@ -3093,7 +3370,13 @@ class MainActivity : Activity() {
         }
         paymentStateError?.let { addView(textView(it, 12, false, warn).withTop(6)) }
         if (id != null) {
-            addView(button("결제·환급 상태 새로고침", secondary = true) { loadPaymentStates() }.withTop(8))
+            paymentLastRefreshedAt?.let { addView(textView("마지막 확인 $it", 11, false, muted).withTop(5)) }
+            addView(button(if (paymentRefreshInProgress) "확인 중…" else "결제·환급 상태 새로고침", secondary = true) {
+                if (!paymentRefreshInProgress) {
+                    toast("결제·환급 상태를 확인 중입니다.")
+                    loadPaymentStates()
+                }
+            }.withTop(8))
             if (payment?.refundAllowed == true && id !in refundRequests) {
                 addView(button("보증금 ${money(payment.refundableAmount)} 환급 요청") { requestRefund(contract) }.withTop(8))
             }
@@ -3197,6 +3480,9 @@ class MainActivity : Activity() {
     }
 
     private fun addNotification(icon: String, title: String, body: String, target: Screen) {
+        val prefs = getSharedPreferences("shareguard_settings", MODE_PRIVATE)
+        val key = if (target == Screen.CHAT) "chat_notifications" else "trade_notifications"
+        if (!prefs.getBoolean(key, true)) return
         notifications.add(0, AppNotification(nextNotificationId++, icon, title, body, "방금", target))
     }
 
@@ -3328,7 +3614,7 @@ class MainActivity : Activity() {
         contract.refundHeld = true
         reports.add(Report(nextReportId++, contract.id, "거래 문제", reason.ifBlank { "거래 중 문제가 발생해 검토를 요청합니다." }))
         addNotification("⚠", "분쟁 신고 접수", "관리자가 상태 사진과 채팅 기록을 검토합니다.", Screen.FEEDBACK)
-        screen = Screen.ADMIN
+        screen = if (BuildConfig.DEBUG && currentUser().role == "관리자") Screen.ADMIN else Screen.RESERVATIONS
         toast("신고가 접수되고 환급이 보류되었습니다.")
         render()
     }
@@ -3467,7 +3753,7 @@ class MainActivity : Activity() {
                 }
                 profileReviews = reviews.getOrDefault(emptyList())
                 profileReviewsError = if (reviews.isFailure) "후기를 불러오지 못했습니다." else null
-                render()
+                if (screen != Screen.CHAT || !chatDetailOpen) render()
             }
         }.start()
     }
@@ -3579,7 +3865,14 @@ class MainActivity : Activity() {
         }
         background = rounded(if (message.mine) blue else Color.WHITE, 8, if (message.mine) blue else line)
         setPadding(dp(12), dp(9), dp(12), dp(9))
-        addView(textView(message.text, 14, false, if (message.mine) Color.WHITE else text))
+        val media = ChatMedia.fromBody(message.text)
+        if (media == null) {
+            addView(textView(message.text, 14, false, if (message.mine) Color.WHITE else text))
+        } else {
+            addView(button(if (media.kind == "image") "📷 사진 보기" else "▶ 영상 보기", secondary = true) {
+                openChatMedia(media)
+            })
+        }
         addView(textView("${message.time}${if (message.mine && message.read) " · 읽음" else ""}", 10, false, if (message.mine) Color.rgb(219, 234, 254) else muted).apply {
             gravity = Gravity.END
         }.withTop(4))
