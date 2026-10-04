@@ -80,7 +80,7 @@ class LocalDatabaseIntegrationTest {
 
     @Test
     void migrationRevokesDemoWritesAndPreservesExplicitSigningRpc() {
-        assertEquals(3, jdbc.queryForObject("select count(*) from public.flyway_schema_history where version in ('1','2','3') and success", Integer.class));
+        assertEquals(4, jdbc.queryForObject("select count(*) from public.flyway_schema_history where version in ('1','2','3','4') and success", Integer.class));
         assertFalse(jdbc.queryForObject("select has_function_privilege('authenticated', 'public.pay_demo_reservation(uuid)', 'EXECUTE')", Boolean.class));
         assertFalse(jdbc.queryForObject("select has_function_privilege('authenticated', 'public.verify_rental_transition(uuid,text)', 'EXECUTE')", Boolean.class));
         assertFalse(jdbc.queryForObject("select has_table_privilege('authenticated', 'public.payments', 'UPDATE')", Boolean.class));

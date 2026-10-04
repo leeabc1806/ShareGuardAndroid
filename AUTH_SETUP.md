@@ -93,3 +93,30 @@ PASS 앱 전환을 포함한 흐름은 해당 인증 채널을 사용할 수 있
 - 새 DB와 기존 DB의 적용 순서는 [DB 설정 안내](./ShareGuardAndroid/database/README.md)를 따릅니다.
 
 공식 문서 확인일: **2026-09-27**.
+
+## 7. PC에서 테스트 계정 비밀번호 복구
+
+현재 Android 앱에는 비밀번호 변경 화면이 없습니다. Supabase의 Site URL이
+`http://localhost:3000`이면 아래 도우미를 실행해 PC에서 비밀번호를 바꾼 뒤
+휴대폰 앱에 다시 로그인할 수 있습니다. Python 3만 필요합니다.
+
+```powershell
+python tools/password-recovery/server.py
+```
+
+1. 이 PC에서 `http://localhost:3000`이 열리는지 확인합니다.
+2. Supabase `Authentication > Users`에서 본인의 계정을 선택하고
+   `Send password recovery`를 누릅니다.
+3. 새로 받은 메일의 링크를 **서버를 실행한 PC에서** 엽니다.
+4. 페이지에 표시되는 이메일을 확인하고 새 비밀번호를 두 번 입력한 후
+   `비밀번호 변경`을 누릅니다.
+5. 휴대폰 앱에서 같은 이메일과 새 비밀번호로 로그인합니다.
+
+도우미는 `ShareGuardAndroid/local.properties`의 URL과 공개 키만 읽고,
+`127.0.0.1:3000`에서만 실행됩니다. 비밀번호 변경은 사용자가 버튼을 누를 때
+브라우저에서 Supabase로 직접 요청합니다. 복구 토큰과 비밀번호를 파일이나
+브라우저 저장소에 저장하지 않습니다. 이미 사용했거나 만료된 메일 링크는
+다시 사용할 수 없으므로 새 메일을 발송합니다.
+
+이 도우미는 개발 중 PC 복구용입니다. 휴대폰에서 메일 링크를 직접 여는 기능과
+운영 배포에는 별도의 앱 복구 화면 또는 HTTPS 복구 페이지가 필요합니다.
