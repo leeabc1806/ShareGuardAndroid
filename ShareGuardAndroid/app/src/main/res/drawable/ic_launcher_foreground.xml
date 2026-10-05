@@ -1,13 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 렌탈(빌려주고 돌려받기) 순환 화살표 + 안전 보증 방패 + 대여 물품 박스 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- 대여 화살표 (위쪽, 시계 방향) -->
+    <path
+        android:pathData="M26.43,49.14 A28,28 0 0,1 78.25,40"
+        android:strokeWidth="5"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M27,24h54a6,6 0,0 1,6 6v48a6,6 0,0 1,-6 6H27a6,6 0,0 1,-6 -6V30a6,6 0,0 1,6 -6z" />
+        android:pathData="M81.75,46.06 L82.15,37.75 L74.35,42.25 Z"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineJoin="round" />
+
+    <!-- 반납 화살표 (아래쪽, 시계 방향) -->
+    <path
+        android:pathData="M81.57,58.86 A28,28 0 0,1 29.75,68"
+        android:strokeWidth="5"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M26.25,61.94 L25.85,70.25 L33.65,65.75 Z"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineJoin="round" />
+
+    <!-- 안전 보증 방패 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,37 L69,42.5 V54 C69,63.5 62.5,70 54,73 C45.5,70 39,63.5 39,54 V42.5 Z" />
+
+    <!-- 대여 물품 박스 -->
     <path
         android:fillColor="#2563EB"
-        android:pathData="M34,40h40v8H34zM34,55h28v8H34zM34,70h40v8H34z" />
+        android:pathData="M45.5,47 h17 a1,1 0 0,1 1,1 v3.5 a1,1 0 0,1 -1,1 h-17 a1,1 0 0,1 -1,-1 v-3.5 a1,1 0 0,1 1,-1 z" />
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M46,53.5 h16 v9 a2,2 0 0,1 -2,2 h-12 a2,2 0 0,1 -2,-2 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50.5,56 h7 a1.2,1.2 0 0,1 0,2.4 h-7 a1.2,1.2 0 0,1 0,-2.4 z" />
 </vector>
