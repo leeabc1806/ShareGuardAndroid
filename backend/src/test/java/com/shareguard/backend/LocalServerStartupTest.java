@@ -6,6 +6,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import org.flywaydb.core.Flyway;
+import org.flywaydb.database.postgresql.PostgreSQLConfigurationExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +26,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 class LocalServerStartupTest {
     @Value("${local.server.port}") private int port;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private Flyway flyway;
 
     @Test
     void serverStartsWithDatabaseHealthAndAllMigrations() throws Exception {
@@ -32,7 +35,11 @@ class LocalServerStartupTest {
             HttpResponse.BodyHandlers.ofString());
         assertEquals(200, response.statusCode());
         assertTrue(response.body().contains("\"status\":\"UP\""));
+        assertFalse(flyway.getConfiguration()
+            .getConfigurationExtension(PostgreSQLConfigurationExtension.class).isTransactionalLock());
         assertEquals(4, jdbc.queryForObject("select count(*) from public.flyway_schema_history where version in ('1','2','3','4') and success", Integer.class));
+        assertEquals(1, jdbc.queryForObject(
+            "select count(*) from public.flyway_schema_history where version = '7' and success", Integer.class));
     }
 
     @Test

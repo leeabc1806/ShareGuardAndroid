@@ -20,6 +20,12 @@ spring:
     enabled: ${FLYWAY_ENABLED:true}
     baseline-on-migrate: true
     baseline-version: 0
+    postgresql:
+      # V7 protects Flyway's own history table. A transaction-level advisory lock
+      # keeps the history reader's transaction open and blocks V7's ALTER TABLE
+      # on the migration connection. Session locks still serialize migrations,
+      # without retaining that reader transaction.
+      transactional-lock: false
   security:
     oauth2:
       resourceserver:

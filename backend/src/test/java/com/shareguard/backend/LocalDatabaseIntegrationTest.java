@@ -9,6 +9,7 @@ import com.shareguard.backend.qr.QrTokenService;
 import java.util.UUID;
 import java.util.function.Consumer;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.database.postgresql.PostgreSQLConfigurationExtension;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -27,7 +28,9 @@ class LocalDatabaseIntegrationTest {
     static void migrate() {
         var source = new DriverManagerDataSource(System.getenv("SHAREGUARD_TEST_DB_URL"), "postgres",
             System.getenv("SHAREGUARD_TEST_DB_PASSWORD"));
-        var flyway = Flyway.configure().dataSource(source).baselineOnMigrate(true).baselineVersion("0").load();
+        var config = Flyway.configure().dataSource(source).baselineOnMigrate(true).baselineVersion("0");
+        config.getConfigurationExtension(PostgreSQLConfigurationExtension.class).setTransactionalLock(false);
+        var flyway = config.load();
         flyway.migrate();
         flyway.validate();
         jdbc = new JdbcTemplate(source);
