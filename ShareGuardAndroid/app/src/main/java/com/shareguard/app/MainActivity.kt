@@ -297,6 +297,27 @@ class MainActivity : Activity() {
     private var maxDistanceKm = 10
     private var registerTab = "새 물품"
     private var registerCategory = "카메라"
+
+    private val categories = listOf(
+        "전체",
+        "카메라",
+        "게임기",
+        "캠핑",
+        "IT기기",
+        "생활가전",
+        "음향기기",
+        "스포츠",
+        "공구",
+        "차량용품",
+        "여행용품",
+        "의류/패션",
+        "악기",
+        "취미용품",
+        "기타"
+    )
+
+    private val registerCategories = categories.drop(1)
+
     private var editingItemId: Int? = null
     private val registrationPhotoUris = mutableListOf<Uri>()
     private var chatDetailOpen = false
@@ -968,13 +989,17 @@ class MainActivity : Activity() {
 
         content.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+
             addView(row {
-                listOf("전체", "카메라", "게임기", "캠핑", "IT기기").forEachIndexed { index, category ->
+                categories.forEachIndexed { index, category ->
                     addView(categoryChip(category, selectedCategory == category) {
                         selectedCategory = category
                         render()
                     })
-                    if (index != 4) addView(space(8))
+
+                    if (index != categories.lastIndex) {
+                        addView(space(8))
+                    }
                 }
             })
         }.withTop(14))
@@ -1049,13 +1074,17 @@ class MainActivity : Activity() {
         content.addView(textView("카테고리", 18, true, text).withTop(30))
         content.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+
             addView(row {
-                listOf("전체", "카메라", "게임기", "캠핑", "IT기기").forEachIndexed { index, category ->
+                categories.forEachIndexed { index, category ->
                     addView(categoryChip(category, selectedCategory == category) {
                         selectedCategory = category
                         render()
                     })
-                    if (index != 4) addView(space(8))
+
+                    if (index != categories.lastIndex) {
+                        addView(space(8))
+                    }
                 }
             })
         }.withTop(12))
