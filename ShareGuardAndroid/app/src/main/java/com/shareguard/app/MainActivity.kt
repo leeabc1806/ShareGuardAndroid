@@ -3,6 +3,9 @@ package com.shareguard.app
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Dialog
+import android.graphics.drawable.ColorDrawable
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.text.TextWatcher
 import android.text.Editable
@@ -37,6 +40,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
@@ -262,6 +266,10 @@ class MainActivity : Activity() {
     private lateinit var content: LinearLayout
     private lateinit var bottomNav: LinearLayout
     private lateinit var mainScroll: ScrollView
+    private lateinit var swipeRefresh: SwipeRefreshLayout
+    private val pendingRefreshLoads = mutableSetOf<String>()
+    private var pullRefreshFailed = false
+    private var itemsLoading = false
     private var chatComposer: LinearLayout? = null
     private var chatInput: EditText? = null
     private var chatMessagesView: LinearLayout? = null
@@ -304,6 +312,7 @@ class MainActivity : Activity() {
     private var registerCategoryScrollX = 0
     private var sortMode = "거리순"
     private var maxDistanceKm = 10
+    private var nearbyOnly = false
     private var registerTab = "새 물품"
     private var registerCategory = "카메라"
 
@@ -634,8 +643,15 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(18), dp(16), dp(12))
         }
         mainScroll = ScrollView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(match, 0, 1f)
+            isFillViewport = true
             addView(content)
+        }
+        swipeRefresh = SwipeRefreshLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(match, 0, 1f)
+            setColorSchemeColors(blue)
+            setOnChildScrollUpCallback { _, _ -> mainScroll.canScrollVertically(-1) }
+            setOnRefreshListener { refreshCurrentTab() }
+            addView(mainScroll)
         }
         bottomNav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -643,7 +659,7 @@ class MainActivity : Activity() {
             setPadding(dp(8), dp(6), dp(8), dp(6))
             background = rounded(Color.WHITE, 0)
         }
-        root.addView(mainScroll)
+        root.addView(swipeRefresh)
         root.addView(bottomNav, LinearLayout.LayoutParams(match, dp(66)))
         setContentView(root)
     }
@@ -667,6 +683,10 @@ class MainActivity : Activity() {
         val showVerification = supabase.isConfigured &&
                 !sessionToken.isNullOrBlank() &&
                 verificationStep != VerificationStep.NONE
+        swipeRefresh.isEnabled = !showInitialAuth && !showVerification && screen in setOf(
+            Screen.HOME, Screen.MAP, Screen.CHAT, Screen.RESERVATIONS, Screen.PROFILE
+        )
+        swipeRefresh.isRefreshing = swipeRefresh.isEnabled && pendingRefreshLoads.isNotEmpty()
         bottomNav.visibility = if (showInitialAuth || showVerification) View.GONE else View.VISIBLE
         if (showInitialAuth) {
             if (authPanel == AuthPanel.CLOSED) renderAuthLanding() else renderAuthPage()
@@ -698,6 +718,45 @@ class MainActivity : Activity() {
             Screen.ADMIN -> renderAdmin()
         }
         renderBottomNav()
+    }
+
+    private fun refreshCurrentTab() {
+        if (pendingRefreshLoads.isNotEmpty()) return
+        if (!swipeRefresh.isEnabled) {
+            swipeRefresh.isRefreshing = false
+            return
+        }
+        if (!supabase.isConfigured || sessionToken == null) {
+            swipeRefresh.isRefreshing = false
+            render()
+            return
+        }
+        val load = when (screen) {
+            Screen.HOME, Screen.MAP -> "items"
+            Screen.CHAT -> if (chatDetailOpen) "chat" else "reservations"
+            Screen.RESERVATIONS -> "reservations"
+            Screen.PROFILE -> "profile"
+            else -> { swipeRefresh.isRefreshing = false; return }
+        }
+        pendingRefreshLoads.add(load)
+        pullRefreshFailed = false
+        swipeRefresh.isRefreshing = true
+        // Existing in-flight requests complete the same load, avoiding duplicate calls.
+        when (load) {
+            "items" -> loadRemoteItems()
+            "chat" -> loadRemoteChat()
+            "reservations" -> loadRemoteReservations()
+            "profile" -> loadCurrentProfile()
+        }
+    }
+
+    private fun finishPullRefresh(load: String, succeeded: Boolean = false) {
+        if (!pendingRefreshLoads.remove(load)) return
+        if (!succeeded) pullRefreshFailed = true
+        if (pendingRefreshLoads.isEmpty()) {
+            swipeRefresh.isRefreshing = false
+            if (!pullRefreshFailed && activityVisible) toast("새로고침 완료")
+        }
     }
 
     private fun renderHeader() {
@@ -945,19 +1004,56 @@ class MainActivity : Activity() {
 
     private fun renderHome() {
         content.addView(row {
-            val locationLabel = when {
-                locating -> "📍  위치 확인 중…"
-                currentLatitude != null -> "📍  현재 위치 기준"
-                else -> "📍  위치 사용 안 함"
-            }
-            addView(textView(locationLabel, 19, true, text), LinearLayout.LayoutParams(0, dp(44), 1f))
-            addView(coloredButton("◎", Color.rgb(245, 247, 251), text) { requestCurrentLocation() }, LinearLayout.LayoutParams(dp(48), dp(44)))
-            addView(space(6))
+
+            // 전체 물품 보기
+            addView(
+                categoryChip("전체 물품", !nearbyOnly) {
+                    nearbyOnly = false
+                    render()
+                },
+                LinearLayout.LayoutParams(dp(96), dp(44))
+            )
+
+            addView(space(8))
+
+            // 현재 위치 기준 주변 물품 보기
+            addView(
+                categoryChip(
+                    if (locating) "위치 확인 중…" else "📍 내 주변",
+                    nearbyOnly
+                ) {
+                    if (!locating) {
+                        requestCurrentLocation()
+                    }
+                },
+                LinearLayout.LayoutParams(dp(124), dp(44))
+            )
+
+            // 오른쪽 빈 공간
+            addView(
+                Space(this@MainActivity),
+                LinearLayout.LayoutParams(0, dp(1), 1f)
+            )
+
+            addView(space(8))
+
+            // 알림
             val unread = notifications.count { it.unread }
-            addView(coloredButton(if (unread > 0) "🔔 $unread" else "🔔", Color.rgb(245, 247, 251), text) {
-                screen = Screen.NOTIFICATIONS
-                render()
-            }, LinearLayout.LayoutParams(dp(if (unread > 0) 72 else 48), dp(44)))
+
+            addView(
+                coloredButton(
+                    if (unread > 0) "🔔 $unread" else "🔔",
+                    Color.rgb(245, 247, 251),
+                    text
+                ) {
+                    screen = Screen.NOTIFICATIONS
+                    render()
+                },
+                LinearLayout.LayoutParams(
+                    dp(if (unread > 0) 72 else 48),
+                    dp(44)
+                )
+            )
         })
 
         val search = edit(searchQuery).apply {
@@ -1001,7 +1097,21 @@ class MainActivity : Activity() {
         }.withTop(16))
 
         val results = filteredItems()
-        content.addView(textView("주변 ${results.size}개의 대여 가능 물품", 14, true, muted).withTop(18))
+
+        val resultLabel = if (nearbyOnly) {
+            "내 주변 ${maxDistanceKm}km · ${results.size}개의 대여 가능 물품"
+        } else {
+            "전체 ${results.size}개의 대여 가능 물품"
+        }
+
+        content.addView(
+            textView(
+                resultLabel,
+                14,
+                true,
+                muted
+            ).withTop(18)
+        )
         if (results.isEmpty()) {
             content.addView(empty("조건에 맞는 물품이 없습니다. 필터를 조정해 보세요.").withTop(10))
         } else {
@@ -1281,7 +1391,11 @@ class MainActivity : Activity() {
                     selectedCategory == "기타" && item.category !in itemCategories && item.category != "IT"
             val queryMatches = searchQuery.isBlank() || listOf(item.title, item.category, item.description, item.location)
                 .any { it.contains(searchQuery, ignoreCase = true) }
-            item.available && item.status == "active" && categoryMatches && queryMatches && item.distance <= maxDistanceKm * 1000
+            item.available &&
+                    item.status == "active" &&
+                    categoryMatches &&
+                    queryMatches &&
+                    (!nearbyOnly || item.distance <= maxDistanceKm * 1000)
         }
         return when (sortMode) {
             "가격순" -> categoryFiltered.sortedBy(Item::price)
@@ -1345,6 +1459,8 @@ class MainActivity : Activity() {
     private fun applyCurrentLocation(location: Location) {
         currentLatitude = location.latitude
         currentLongitude = location.longitude
+        nearbyOnly = true
+
         locating = false
         items.forEach { item ->
             val latitude = item.latitude
@@ -1688,14 +1804,30 @@ class MainActivity : Activity() {
         chatMessagesContainer = null
         dateRequestsContainer = null
         if (!chatDetailOpen) {
-            content.addView(textView("왼쪽으로 밀어 채팅방을 삭제할 수 있어요.", 13, false, muted).withTop(12))
+            content.addView(textView("채팅방을 길게 눌러 알림과 고정을 설정하세요.", 13, false, muted).withTop(12))
+            val account = sessionUserId
             val visible = remoteChatRooms.filterNot { it.hidden }
+                .sortedWith(compareByDescending { ChatRoomSettings.isPinned(this, account, it.reservationId) })
             if (visible.isEmpty()) content.addView(empty("예약한 물품의 대화가 여기에 표시됩니다.").withTop(12))
             visible.forEach { room ->
                 val reservation = reservations.find { it.remoteId == room.reservationId } ?: return@forEach
                 val item = items.find { it.id == reservation.itemId } ?: return@forEach
                 val chatCard = card().apply {
-                    addView(textView(counterpartyName(reservation), 17, true, text))
+                    addView(row {
+                        addView(textView(counterpartyName(reservation), 17, true, text), LinearLayout.LayoutParams(0, wrap, 1f))
+                        if (ChatRoomSettings.isMuted(this@MainActivity, account, room.reservationId)) {
+                            addView(textView("🔕", 16, false, muted))
+                        }
+                        if (ChatRoomSettings.isPinned(this@MainActivity, account, room.reservationId)) {
+                            addView(textView("📌", 16, false, blue))
+                        }
+                        addView(textView("⋮", 23, true, muted).apply {
+                            contentDescription = "채팅방 메뉴"
+                            gravity = Gravity.CENTER
+                            setPadding(dp(12), 0, dp(4), 0)
+                            setOnClickListener { showChatRoomMenu(room, reservation) }
+                        })
+                    })
                     addView(textView(item.title, 14, true, blue).withTop(4))
                     addView(textView("${reservation.startDate} ~ ${reservation.endDate}", 12, false, muted))
                     val lastMedia = ChatMedia.fromBody(room.lastBody)
@@ -1703,7 +1835,7 @@ class MainActivity : Activity() {
                         ?: room.lastBody.ifBlank { "대화를 시작해보세요." }, 14, false, text).withTop(6))
                     if (room.unreadCount > 0) addView(statusChip("새 메시지 ${room.unreadCount}").withTop(4))
                     setOnClickListener { openReservationChat(reservation) }
-                    setOnLongClickListener { confirmHideChat(room); true }
+                    setOnLongClickListener { showChatRoomMenu(room, reservation); true }
                 }
                 enableSwipeDelete(chatCard) { confirmHideChat(room) }
                 content.addView(chatCard.withTop(10))
@@ -2830,7 +2962,8 @@ class MainActivity : Activity() {
     }
 
     private fun loadRemoteItems() {
-        if (!supabase.isConfigured) return
+        if (!supabase.isConfigured || itemsLoading) return
+        itemsLoading = true
         loadCurrentProfile()
         val token = sessionToken
         val account = sessionUserId
@@ -2841,16 +2974,21 @@ class MainActivity : Activity() {
                 remote to profiles
             }
             runOnUiThread {
-                if (account != sessionUserId) return@runOnUiThread
-                result.onSuccess { (remote, profiles) ->
-                    profiles.forEach { ownerProfiles[it.id] = it }
-                    val referenced = reservations.map { it.itemId }.toSet()
-                    items.removeAll { it.id !in referenced }
-                    for (index in items.indices) items[index] = items[index].copy(available = false)
-                    remote.forEach { upsertItem(remoteToItem(it)) }
-                    if (sessionToken != null) loadRemoteReservations()
-                    if (screen in setOf(Screen.HOME, Screen.MAP, Screen.DETAIL)) render()
-                }.onFailure { toast("물품 조회 실패: ${it.message}") }
+                try {
+                    if (account != sessionUserId) return@runOnUiThread
+                    result.onSuccess { (remote, profiles) ->
+                        profiles.forEach { ownerProfiles[it.id] = it }
+                        val referenced = reservations.map { it.itemId }.toSet()
+                        items.removeAll { it.id !in referenced }
+                        for (index in items.indices) items[index] = items[index].copy(available = false)
+                        remote.forEach { upsertItem(remoteToItem(it)) }
+                        if (sessionToken != null) loadRemoteReservations()
+                        if (screen in setOf(Screen.HOME, Screen.MAP, Screen.DETAIL)) render()
+                    }.onFailure { toast("물품 조회 실패: ${it.message}") }
+                } finally {
+                    itemsLoading = false
+                    finishPullRefresh("items", result.isSuccess)
+                }
             }
         }.start()
     }
@@ -2991,31 +3129,38 @@ class MainActivity : Activity() {
                     supabase.fetchChatRooms(token), supabase.fetchArchivedReservations(token))
             }
             runOnUiThread {
-                reservationLoading = false
-                if (account != sessionUserId) return@runOnUiThread
-                result.onSuccess { snapshot ->
-                    val changed = remoteChatRooms != snapshot.rooms
-                    val previousChatReservation = reservations.find { it.id == selectedChatReservationId }
-                    snapshot.profiles.forEach { ownerProfiles[it.id] = it }
-                    snapshot.items.forEach { upsertItem(remoteToItem(it)) }
-                    reservations.clear(); contracts.clear()
-                    snapshot.reservations.mapNotNull(::remoteToReservation).forEach(reservations::add)
-                    snapshot.contracts.mapNotNull(::remoteToContract).forEach(contracts::add)
-                    loadPaymentStates()
-                    remoteChatRooms = snapshot.rooms
-                    archivedReservations = snapshot.archived
-                    val chatReservationChanged = previousChatReservation != reservations.find { it.id == selectedChatReservationId }
-                    if (pendingNotificationReservation != null) {
-                        val reservation = reservations.find { it.remoteId == pendingNotificationReservation }
-                        if (reservation != null) {
-                            val kind = pendingNotificationKind
-                            pendingNotificationReservation = null
-                            if (kind == "chat" || kind == "schedule") openReservationChat(reservation)
-                            else { screen = Screen.RESERVATIONS; reservationTab = if (itemById(reservation.itemId).remoteOwnerId == sessionUserId) "빌려준 물품" else "빌린 물품"; render() }
+                try {
+                    reservationLoading = false
+                    if (account != sessionUserId) return@runOnUiThread
+                    result.onSuccess { snapshot ->
+                        val changed = remoteChatRooms != snapshot.rooms
+                        val previousChatReservation = reservations.find { it.id == selectedChatReservationId }
+                        snapshot.profiles.forEach { ownerProfiles[it.id] = it }
+                        snapshot.items.forEach { upsertItem(remoteToItem(it)) }
+                        reservations.clear(); contracts.clear()
+                        snapshot.reservations.mapNotNull(::remoteToReservation).forEach(reservations::add)
+                        snapshot.contracts.mapNotNull(::remoteToContract).forEach(contracts::add)
+                        if ("reservations" in pendingRefreshLoads && server.isConfigured) {
+                            pendingRefreshLoads.add("payments")
                         }
-                    } else if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE) || screen == Screen.CHAT && (!chatDetailOpen && changed || chatDetailOpen && chatReservationChanged)) render()
-                    if (screen == Screen.CHAT && chatDetailOpen) loadRemoteChat()
-                }.onFailure { toast("예약·채팅 조회 실패: ${it.message}") }
+                        loadPaymentStates()
+                        remoteChatRooms = snapshot.rooms
+                        archivedReservations = snapshot.archived
+                        val chatReservationChanged = previousChatReservation != reservations.find { it.id == selectedChatReservationId }
+                        if (pendingNotificationReservation != null) {
+                            val reservation = reservations.find { it.remoteId == pendingNotificationReservation }
+                            if (reservation != null) {
+                                val kind = pendingNotificationKind
+                                pendingNotificationReservation = null
+                                if (kind == "chat" || kind == "schedule") openReservationChat(reservation)
+                                else { screen = Screen.RESERVATIONS; reservationTab = if (itemById(reservation.itemId).remoteOwnerId == sessionUserId) "빌려준 물품" else "빌린 물품"; render() }
+                            }
+                        } else if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE) || screen == Screen.CHAT && (!chatDetailOpen && changed || chatDetailOpen && chatReservationChanged)) render()
+                        if (screen == Screen.CHAT && chatDetailOpen) loadRemoteChat()
+                    }.onFailure { toast("예약·채팅 조회 실패: ${it.message}") }
+                } finally {
+                    finishPullRefresh("reservations", result.isSuccess)
+                }
             }
         }.start()
     }
@@ -3026,12 +3171,13 @@ class MainActivity : Activity() {
     )
 
     private fun loadRemoteChat() {
-        if (screen != Screen.CHAT || !chatDetailOpen || chatLoading) return
-        val token = sessionToken ?: return
-        val account = sessionUserId ?: return
+        if (chatLoading) return
+        if (screen != Screen.CHAT || !chatDetailOpen) { finishPullRefresh("chat"); return }
+        val token = sessionToken ?: run { finishPullRefresh("chat"); return }
+        val account = sessionUserId ?: run { finishPullRefresh("chat"); return }
         val selected = selectedChatReservationId
-        val reservation = reservations.find { it.id == selected } ?: return
-        val reservationId = reservation.remoteId ?: return
+        val reservation = reservations.find { it.id == selected } ?: run { finishPullRefresh("chat"); return }
+        val reservationId = reservation.remoteId ?: run { finishPullRefresh("chat"); return }
         chatLoading = true
         Thread {
             val result = runCatching {
@@ -3040,22 +3186,26 @@ class MainActivity : Activity() {
                 Triple(room, messages, supabase.fetchDateRequests(reservationId, token))
             }
             runOnUiThread {
-                chatLoading = false
-                if (sessionUserId != account || selectedChatReservationId != selected || screen != Screen.CHAT || !chatDetailOpen) return@runOnUiThread
-                result.onSuccess { (room, messages, requests) ->
-                    activeChatRoomId = room
-                    val mapped = messages.map { message ->
-                        val time = runCatching { java.time.Instant.parse(message.createdAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")) }.getOrDefault("")
-                        ChatMessage(message.senderId == account, message.body, time, false)
-                    }
-                    if (chatMessages != mapped) {
-                        chatMessages.clear(); chatMessages.addAll(mapped)
-                        updateChatMessages()
-                    }
-                    dateRequests = requests
-                    renderDateRequests(reservation)
-                    if (room != null) Thread { runCatching { supabase.markChatRead(room, account, token) } }.start()
-                }.onFailure { toast("채팅 조회 실패: ${it.message}") }
+                try {
+                    chatLoading = false
+                    if (sessionUserId != account || selectedChatReservationId != selected || screen != Screen.CHAT || !chatDetailOpen) return@runOnUiThread
+                    result.onSuccess { (room, messages, requests) ->
+                        activeChatRoomId = room
+                        val mapped = messages.map { message ->
+                            val time = runCatching { java.time.Instant.parse(message.createdAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")) }.getOrDefault("")
+                            ChatMessage(message.senderId == account, message.body, time, false)
+                        }
+                        if (chatMessages != mapped) {
+                            chatMessages.clear(); chatMessages.addAll(mapped)
+                            updateChatMessages()
+                        }
+                        dateRequests = requests
+                        renderDateRequests(reservation)
+                        if (room != null) Thread { runCatching { supabase.markChatRead(room, account, token) } }.start()
+                    }.onFailure { toast("채팅 조회 실패: ${it.message}") }
+                } finally {
+                    finishPullRefresh("chat", result.isSuccess)
+                }
             }
         }.start()
     }
@@ -3456,17 +3606,21 @@ class MainActivity : Activity() {
         Thread {
             val results = ids.associateWith { id -> runCatching { server.payment(id, token) } }
             runOnUiThread {
-                if (sessionToken != token || readVersion != paymentReadVersion) return@runOnUiThread
-                paymentStates.clear()
-                results.forEach { (id, result) -> result.getOrNull()?.let { paymentStates[id] = it } }
-                paymentStateError = if (results.values.any { it.isFailure }) "일부 결제 상태를 확인하지 못했습니다. 새로고침해주세요." else null
-                paymentRefreshInProgress = false
-                paymentLastRefreshedAt = java.time.LocalTime.now().toString().take(8)
-                contracts.forEach { contract ->
-                    val id = reservations.find { it.id == contract.reservationId }?.remoteId
-                    contract.refunded = paymentStates[id]?.refunded == true
+                try {
+                    if (sessionToken != token || readVersion != paymentReadVersion) return@runOnUiThread
+                    paymentStates.clear()
+                    results.forEach { (id, result) -> result.getOrNull()?.let { paymentStates[id] = it } }
+                    paymentStateError = if (results.values.any { it.isFailure }) "일부 결제 상태를 확인하지 못했습니다. 새로고침해주세요." else null
+                    paymentRefreshInProgress = false
+                    paymentLastRefreshedAt = java.time.LocalTime.now().toString().take(8)
+                    contracts.forEach { contract ->
+                        val id = reservations.find { it.id == contract.reservationId }?.remoteId
+                        contract.refunded = paymentStates[id]?.refunded == true
+                    }
+                    if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
+                } finally {
+                    finishPullRefresh("payments", results.values.all { it.isSuccess })
                 }
-                if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
             }
         }.start()
     }
@@ -3825,6 +3979,8 @@ class MainActivity : Activity() {
     }
 
     private fun clearAccountViews() {
+        pendingRefreshLoads.clear()
+        if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false
         if (::supabase.isInitialized && supabase.isConfigured) items.clear()
         reservations.clear(); contracts.clear(); chatMessages.clear(); notifications.clear()
         paymentStates.clear(); qrPayloads.clear(); reports.clear(); activeContractId = null
@@ -3926,10 +4082,20 @@ class MainActivity : Activity() {
     }
 
     private fun enableSwipeDelete(view: View, onDelete: () -> Unit) {
-        var x = 0f; var y = 0f; var horizontal = false
+        var x = 0f; var y = 0f; var horizontal = false; var longPressed = false
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(event: MotionEvent): Boolean = true
+            override fun onLongPress(event: MotionEvent) {
+                if (!horizontal) {
+                    longPressed = true
+                    view.performLongClick()
+                }
+            }
+        })
         view.setOnTouchListener { target, event ->
+            gestures.onTouchEvent(event)
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { x = event.x; y = event.y; horizontal = false; true }
+                MotionEvent.ACTION_DOWN -> { x = event.x; y = event.y; horizontal = false; longPressed = false; true }
                 MotionEvent.ACTION_MOVE -> {
                     if (kotlin.math.abs(event.x - x) > dp(24) && kotlin.math.abs(event.x - x) > kotlin.math.abs(event.y - y) * 1.5f) {
                         horizontal = true; target.parent.requestDisallowInterceptTouchEvent(true)
@@ -3939,8 +4105,8 @@ class MainActivity : Activity() {
                 }
                 MotionEvent.ACTION_UP -> {
                     target.alpha = 1f; target.parent.requestDisallowInterceptTouchEvent(false)
-                    if (horizontal && event.x - x < -dp(80)) onDelete()
-                    else if (!horizontal && kotlin.math.abs(event.y-y) < dp(16)) target.performClick()
+                    if (!longPressed && horizontal && event.x - x < -dp(80)) onDelete()
+                    else if (!longPressed && !horizontal && kotlin.math.abs(event.y-y) < dp(16)) target.performClick()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> { target.alpha = 1f; target.parent.requestDisallowInterceptTouchEvent(false); true }
@@ -3949,17 +4115,70 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showChatRoomMenu(room: RemoteChatRoom, reservation: Reservation) {
+        val account = sessionUserId ?: return
+        val reservationId = room.reservationId
+        val isMuted = ChatRoomSettings.isMuted(this, account, reservationId)
+        val isPinned = ChatRoomSettings.isPinned(this, account, reservationId)
+        val dialog = Dialog(this)
+        val sheet = column {
+            setPadding(dp(20), dp(12), dp(20), dp(18))
+            setBackgroundColor(bg)
+        }
+        sheet.addView(textView("${counterpartyName(reservation)} · ${itemById(reservation.itemId).title}", 16, true, text).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(12), dp(8), dp(22))
+        })
+        val actions = column { background = rounded(surface, 18) }
+        fun option(label: String, color: Int = text, action: () -> Unit) {
+            actions.addView(textView(label, 17, true, color).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(20), dp(12), dp(20))
+                setOnClickListener { dialog.dismiss(); action() }
+            }, LinearLayout.LayoutParams(match, dp(68)))
+        }
+        option(if (isMuted) "알림 켜기" else "알림 끄기") {
+            ChatRoomSettings.setMuted(this, account, reservationId, !isMuted)
+            render()
+        }
+        actions.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(match, dp(1)))
+        option(if (isPinned) "채팅방 상단 고정 해제" else "채팅방 상단 고정") {
+            ChatRoomSettings.setPinned(this, account, reservationId, !isPinned)
+            render()
+        }
+        actions.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(match, dp(1)))
+        option("채팅방 나가기", danger) { confirmHideChat(room) }
+        sheet.addView(actions)
+        sheet.addView(textView("취소", 17, true, text).apply {
+            gravity = Gravity.CENTER
+            background = rounded(surface, 18)
+            setOnClickListener { dialog.dismiss() }
+        }, LinearLayout.LayoutParams(match, dp(68)).apply { topMargin = dp(14) })
+        dialog.setContentView(sheet)
+        dialog.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(match, wrap)
+            setGravity(Gravity.BOTTOM)
+        }
+        dialog.show()
+        dialog.window?.setLayout(match, wrap)
+    }
+
     private fun confirmHideChat(room: RemoteChatRoom) {
-        AlertDialog.Builder(this).setTitle("채팅방 삭제").setMessage("내 목록에서 숨깁니다. 상대방의 대화는 유지되며 새 메시지가 오면 다시 표시됩니다.")
-            .setNegativeButton("취소", null).setPositiveButton("삭제") { _, _ ->
+        AlertDialog.Builder(this).setTitle("채팅방 나가기").setMessage("내 채팅 목록에서 숨깁니다. 거래 기록과 상대방의 대화는 유지되며 새 메시지가 오면 다시 표시됩니다.")
+            .setNegativeButton("취소", null).setPositiveButton("나가기") { _, _ ->
                 val token = sessionToken ?: return@setPositiveButton
                 val account = sessionUserId
                 Thread {
                     val result = runCatching { supabase.hideChatRoom(room.id, token) }
                     runOnUiThread {
                         if (account != sessionUserId) return@runOnUiThread
-                        result.onSuccess { remoteChatRooms = remoteChatRooms.map { if (it.id == room.id) it.copy(hidden = true) else it }; render() }
-                            .onFailure { toast("채팅방 삭제 실패: ${it.message}") }
+                        result.onSuccess {
+                            if (account != null) ChatRoomSettings.clear(this, account, room.reservationId)
+                            remoteChatRooms = remoteChatRooms.map { if (it.id == room.id) it.copy(hidden = true) else it }
+                            render()
+                        }
+                            .onFailure { toast("채팅방 나가기 실패: ${it.message}") }
                     }
                 }.start()
             }.show()
@@ -4111,24 +4330,28 @@ class MainActivity : Activity() {
             val result = runCatching { supabase.fetchCurrentProfile(token) }
             val reviews = runCatching { supabase.fetchProfileReviews(userId, token) }
             runOnUiThread {
-                if (sessionUserId != userId ||
-                    version != profileSyncVersion || isFinishing) return@runOnUiThread
-                profileLoading = false
-                result.onSuccess { profile ->
-                    if (profile.id != userId) return@onSuccess
-                    serverUser = profile.toUser()
-                    ownerProfiles[profile.id] = profile
-                    profileLoaded = true
-                    profileError = null
-                    if (profile.verified) verificationStep = VerificationStep.NONE
-                }.onFailure {
-                    profileLoaded = false
-                    serverUser.verified = false
-                    profileError = "프로필을 확인할 수 없습니다. 새로고침해주세요."
+                try {
+                    if (sessionUserId != userId ||
+                        version != profileSyncVersion || isFinishing) return@runOnUiThread
+                    profileLoading = false
+                    result.onSuccess { profile ->
+                        if (profile.id != userId) return@onSuccess
+                        serverUser = profile.toUser()
+                        ownerProfiles[profile.id] = profile
+                        profileLoaded = true
+                        profileError = null
+                        if (profile.verified) verificationStep = VerificationStep.NONE
+                    }.onFailure {
+                        profileLoaded = false
+                        serverUser.verified = false
+                        profileError = "프로필을 확인할 수 없습니다. 새로고침해주세요."
+                    }
+                    profileReviews = reviews.getOrDefault(emptyList())
+                    profileReviewsError = if (reviews.isFailure) "후기를 불러오지 못했습니다." else null
+                    if (screen != Screen.CHAT || !chatDetailOpen) render()
+                } finally {
+                    finishPullRefresh("profile", result.isSuccess && reviews.isSuccess)
                 }
-                profileReviews = reviews.getOrDefault(emptyList())
-                profileReviewsError = if (reviews.isFailure) "후기를 불러오지 못했습니다." else null
-                if (screen != Screen.CHAT || !chatDetailOpen) render()
             }
         }.start()
     }

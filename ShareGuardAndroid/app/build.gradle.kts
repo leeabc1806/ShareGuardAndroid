@@ -70,6 +70,7 @@ dependencies {
     testImplementation("org.json:json:20240303")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     implementation("androidx.appcompat:appcompat:1.5.0")
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("com.kakao.maps.open:android:2.15.1")
     implementation("com.github.tosspayments:payment-sdk-android:0.1.22")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

@@ -63,7 +63,7 @@ object NotificationDelivery {
         events.filter { event ->
             event.unread && settings.getBoolean(
                 if (event.kind == "chat") "chat_notifications" else "trade_notifications", true
-            )
+            ) && (event.kind != "chat" || !ChatRoomSettings.isMuted(context, userId, event.reservationId))
         }.takeLast(10).forEach { event ->
             val intent = Intent(context, MainActivity::class.java)
                 .setData(Uri.parse("shareguard://notification/${event.id}"))
