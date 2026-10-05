@@ -296,7 +296,8 @@ class MainActivity : Activity() {
     private val itemCategories = listOf(
         "카메라", "렌즈", "드론", "게임기", "게임 타이틀", "캠핑", "등산",
         "IT기기", "노트북", "태블릿", "음향기기", "영상기기", "생활",
-        "생활가전", "스포츠", "공구", "악기", "파티용품", "유아용품", "기타"
+        "생활가전", "스포츠", "공구", "차량용품", "여행용품", "의류/패션",
+        "악기", "취미용품", "파티용품", "유아용품", "기타"
     )
     private var homeCategoryScrollX = 0
     private var filterCategoryScrollX = 0
@@ -305,6 +306,7 @@ class MainActivity : Activity() {
     private var maxDistanceKm = 10
     private var registerTab = "새 물품"
     private var registerCategory = "카메라"
+
     private var editingItemId: Int? = null
     private val registrationPhotoUris = mutableListOf<Uri>()
     private var chatDetailOpen = false
@@ -1276,7 +1278,7 @@ class MainActivity : Activity() {
             val categoryMatches = selectedCategory == "전체" ||
                     item.category == selectedCategory ||
                     selectedCategory == "IT기기" && item.category == "IT" ||
-                    selectedCategory == "기타" && item.category !in itemCategories
+                    selectedCategory == "기타" && item.category !in itemCategories && item.category != "IT"
             val queryMatches = searchQuery.isBlank() || listOf(item.title, item.category, item.description, item.location)
                 .any { it.contains(searchQuery, ignoreCase = true) }
             item.available && item.status == "active" && categoryMatches && queryMatches && item.distance <= maxDistanceKm * 1000
@@ -1421,7 +1423,7 @@ class MainActivity : Activity() {
             }.withTop(10))
         }.withTop(12))
         content.addView(textView("카테고리", 14, true, text).withTop(18))
-        content.addView(categoryStrip(itemCategories, registerCategory,
+        content.addView(categoryStrip(itemCategories, if (registerCategory == "IT") "IT기기" else registerCategory,
             registerCategoryScrollX, { registerCategoryScrollX = it }) { category ->
             registerCategory = category
             render()
