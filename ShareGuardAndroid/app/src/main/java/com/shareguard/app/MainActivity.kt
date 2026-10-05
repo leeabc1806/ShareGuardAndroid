@@ -293,6 +293,14 @@ class MainActivity : Activity() {
     private var verificationCodeSent = false
     private var searchQuery = ""
     private var selectedCategory = "전체"
+    private val itemCategories = listOf(
+        "카메라", "렌즈", "드론", "게임기", "게임 타이틀", "캠핑", "등산",
+        "IT기기", "노트북", "태블릿", "음향기기", "영상기기", "생활",
+        "생활가전", "스포츠", "공구", "악기", "파티용품", "유아용품", "기타"
+    )
+    private var homeCategoryScrollX = 0
+    private var filterCategoryScrollX = 0
+    private var registerCategoryScrollX = 0
     private var sortMode = "거리순"
     private var maxDistanceKm = 10
     private var registerTab = "새 물품"
@@ -858,9 +866,6 @@ class MainActivity : Activity() {
                 authenticate(email.text.toString(), password.text.toString(), createAccount, nickname.text.toString())
             }.withTop(16))
         }.withTop(12))
-        content.addView(button("Google 계정으로 로그인", secondary = true) {
-            startGoogleSignIn()
-        }.withTop(12))
     }
 
     private fun renderVerificationPage() {
@@ -966,17 +971,10 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(dp(76), dp(52)))
         }.withTop(12))
 
-        content.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row {
-                listOf("전체", "카메라", "게임기", "캠핑", "IT기기").forEachIndexed { index, category ->
-                    addView(categoryChip(category, selectedCategory == category) {
-                        selectedCategory = category
-                        render()
-                    })
-                    if (index != 4) addView(space(8))
-                }
-            })
+        content.addView(categoryStrip(listOf("전체") + itemCategories, selectedCategory,
+            homeCategoryScrollX, { homeCategoryScrollX = it }) { category ->
+            selectedCategory = category
+            render()
         }.withTop(14))
         content.addView(row {
             addView(categoryChip("거리순", sortMode == "거리순") {
@@ -1047,17 +1045,10 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(dp(88), dp(42)))
         })
         content.addView(textView("카테고리", 18, true, text).withTop(30))
-        content.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row {
-                listOf("전체", "카메라", "게임기", "캠핑", "IT기기").forEachIndexed { index, category ->
-                    addView(categoryChip(category, selectedCategory == category) {
-                        selectedCategory = category
-                        render()
-                    })
-                    if (index != 4) addView(space(8))
-                }
-            })
+        content.addView(categoryStrip(listOf("전체") + itemCategories, selectedCategory,
+            filterCategoryScrollX, { filterCategoryScrollX = it }) { category ->
+            selectedCategory = category
+            render()
         }.withTop(12))
         content.addView(textView("거리", 18, true, text).withTop(30))
         content.addView(row {
@@ -1284,7 +1275,8 @@ class MainActivity : Activity() {
         val categoryFiltered = items.filter { item ->
             val categoryMatches = selectedCategory == "전체" ||
                     item.category == selectedCategory ||
-                    selectedCategory == "IT기기" && item.category == "IT"
+                    selectedCategory == "IT기기" && item.category == "IT" ||
+                    selectedCategory == "기타" && item.category !in itemCategories
             val queryMatches = searchQuery.isBlank() || listOf(item.title, item.category, item.description, item.location)
                 .any { it.contains(searchQuery, ignoreCase = true) }
             item.available && item.status == "active" && categoryMatches && queryMatches && item.distance <= maxDistanceKm * 1000
@@ -1429,17 +1421,10 @@ class MainActivity : Activity() {
             }.withTop(10))
         }.withTop(12))
         content.addView(textView("카테고리", 14, true, text).withTop(18))
-        content.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row {
-                listOf("카메라", "IT기기", "게임기", "캠핑", "생활").forEach { category ->
-                    addView(categoryChip(category, registerCategory == category) {
-                        registerCategory = category
-                        render()
-                    })
-                    addView(space(8))
-                }
-            })
+        content.addView(categoryStrip(itemCategories, registerCategory,
+            registerCategoryScrollX, { registerCategoryScrollX = it }) { category ->
+            registerCategory = category
+            render()
         }.withTop(8))
         content.addView(card().apply {
             addView(field("제목", titleInput))
@@ -4183,6 +4168,21 @@ class MainActivity : Activity() {
             minHeight = dp(42)
             setOnClickListener { onClick() }
         }
+
+    private fun categoryStrip(
+        categories: List<String>, selected: String, savedScrollX: Int,
+        onScroll: (Int) -> Unit, onSelect: (String) -> Unit
+    ): HorizontalScrollView = HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        setOnScrollChangeListener { _, scrollX, _, _, _ -> onScroll(scrollX) }
+        addView(row {
+            categories.forEachIndexed { index, category ->
+                if (index > 0) addView(space(8))
+                addView(categoryChip(category, selected == category) { onSelect(category) })
+            }
+        })
+        post { scrollTo(savedScrollX, 0) }
+    }
 
     private fun metric(label: String, value: String, valueColor: Int = text): LinearLayout = row {
         addView(textView(label, 14, false, muted), LinearLayout.LayoutParams(0, wrap, 1f))
