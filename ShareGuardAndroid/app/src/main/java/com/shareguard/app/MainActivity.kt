@@ -75,6 +75,8 @@ class MainActivity : Activity() {
         private const val SESSION_PREFS = "shareguard_session"
         private const val OAUTH_REDIRECT_URI = "shareguard://auth/callback"
         private const val OAUTH_CODE_VERIFIER = "oauth_code_verifier"
+        private const val KAKAO_OAUTH_REDIRECT_URI = "shareguard://auth-callback"
+        private const val KAKAO_CODE_VERIFIER = "kakao_pkce_verifier"
         private const val INACTIVITY_DAYS = 14L
         private const val INACTIVITY_TIMEOUT_MS = INACTIVITY_DAYS * 24L * 60L * 60L * 1000L
         private const val KEY_ACCESS_TOKEN = "access_token"
@@ -401,7 +403,8 @@ class MainActivity : Activity() {
         buildShell()
         render()
         sessionNotice?.let(::toast)
-        if (handleGoogleAuthCallback(intent)) {
+        // Handle either provider before refreshing an older persisted session.
+        if (handleKakaoOAuthRedirect(intent) || handleGoogleAuthCallback(intent)) {
             return
         } else if (!sessionToken.isNullOrBlank() && !preferences.getString(KEY_REFRESH_TOKEN, null).isNullOrBlank()) {
             refreshPersistedSession()
@@ -414,7 +417,8 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleGoogleAuthCallback(intent)
+        // Do not load previous-account data while a social login is being exchanged.
+        if (handleKakaoOAuthRedirect(intent) || handleGoogleAuthCallback(intent)) return
         captureNotificationIntent(intent)
         loadRemoteReservations()
     }
@@ -651,8 +655,8 @@ class MainActivity : Activity() {
         }
         val showInitialAuth = supabase.isConfigured && sessionToken.isNullOrBlank()
         val showVerification = supabase.isConfigured &&
-            !sessionToken.isNullOrBlank() &&
-            verificationStep != VerificationStep.NONE
+                !sessionToken.isNullOrBlank() &&
+                verificationStep != VerificationStep.NONE
         bottomNav.visibility = if (showInitialAuth || showVerification) View.GONE else View.VISIBLE
         if (showInitialAuth) {
             if (authPanel == AuthPanel.CLOSED) renderAuthLanding() else renderAuthPage()
@@ -794,14 +798,8 @@ class MainActivity : Activity() {
         }.withTop(32))
 
         content.addView(coloredButton("카카오로 시작하기", Color.rgb(254, 229, 0), Color.rgb(25, 25, 25)) {
-            toast("카카오 로그인은 OAuth 설정 후 연결됩니다.")
+            startKakaoLogin()
         }.withTop(24))
-        content.addView(coloredButton("네이버로 시작하기", Color.rgb(3, 199, 90), Color.WHITE) {
-            toast("네이버 로그인은 OAuth 설정 후 연결됩니다.")
-        }.withTop(10))
-        content.addView(coloredButton("Apple로 계속하기", Color.BLACK, Color.WHITE) {
-            toast("Apple 로그인은 OAuth 설정 후 연결됩니다.")
-        }.withTop(10))
         content.addView(button("이메일로 회원가입", secondary = true) {
             authPanel = AuthPanel.SIGN_UP
             render()
@@ -1285,8 +1283,8 @@ class MainActivity : Activity() {
     private fun filteredItems(): List<Item> {
         val categoryFiltered = items.filter { item ->
             val categoryMatches = selectedCategory == "전체" ||
-                item.category == selectedCategory ||
-                selectedCategory == "IT기기" && item.category == "IT"
+                    item.category == selectedCategory ||
+                    selectedCategory == "IT기기" && item.category == "IT"
             val queryMatches = searchQuery.isBlank() || listOf(item.title, item.category, item.description, item.location)
                 .any { it.contains(searchQuery, ignoreCase = true) }
             item.available && item.status == "active" && categoryMatches && queryMatches && item.distance <= maxDistanceKm * 1000
@@ -2205,7 +2203,7 @@ class MainActivity : Activity() {
 
     private fun addMyPostsToProfile() {
         val mine = items.filter { it.available && (it.remoteOwnerId == sessionUserId && sessionUserId != null ||
-            !supabase.isConfigured && it.ownerId == currentUser().id) }
+                !supabase.isConfigured && it.ownerId == currentUser().id) }
         content.addView(sectionTitle("내 게시물", "등록한 물품을 확인하거나 삭제합니다.").withTop(16))
         if (mine.isEmpty()) {
             content.addView(empty("등록한 게시물이 없습니다.").withTop(8))
@@ -2561,6 +2559,88 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    // Start Kakao's hosted OAuth flow through the existing Supabase Auth project.
+    // This deliberately does not initialize another Kakao Android login SDK.
+    private fun startKakaoLogin() {
+        if (!supabase.isConfigured) {
+            toast("Supabase 설정을 확인해주세요.")
+            return
+        }
+        val verifierBytes = ByteArray(32).also(SecureRandom()::nextBytes)
+        val verifier = Base64.encodeToString(
+            verifierBytes,
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        val challenge = Base64.encodeToString(
+            MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+        )
+        getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
+            .edit()
+            .putString(KAKAO_CODE_VERIFIER, verifier)
+            .apply()
+
+        val oauthUri = Uri.parse(BuildConfig.SUPABASE_URL.trimEnd('/') + "/auth/v1/authorize")
+            .buildUpon()
+            .appendQueryParameter("provider", "kakao")
+            .appendQueryParameter("redirect_to", KAKAO_OAUTH_REDIRECT_URI)
+            .appendQueryParameter("flow_type", "pkce")
+            .appendQueryParameter("code_challenge", challenge)
+            .appendQueryParameter("code_challenge_method", "s256")
+            .build()
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, oauthUri))
+        } catch (error: android.content.ActivityNotFoundException) {
+            toast("카카오 로그인 화면을 열 수 없습니다. 브라우저를 확인해주세요.")
+        }
+    }
+
+    // Return true only for our Kakao Deep Link. Google keeps its separate callback.
+    private fun handleKakaoOAuthRedirect(callbackIntent: Intent?): Boolean {
+        val uri = callbackIntent?.data ?: return false
+        if (uri.scheme != "shareguard" || uri.host != "auth-callback") return false
+
+        val preferences = getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
+        val verifier = preferences.getString(KAKAO_CODE_VERIFIER, null)
+        // Consume the one-time verifier even on a failed callback.
+        preferences.edit().remove(KAKAO_CODE_VERIFIER).apply()
+        val error = uri.getQueryParameter("error_description") ?: uri.getQueryParameter("error")
+        if (!error.isNullOrBlank()) {
+            toast("카카오 로그인 실패: $error")
+            return true
+        }
+        val code = uri.getQueryParameter("code")
+        if (code.isNullOrBlank() || verifier.isNullOrBlank()) {
+            toast("카카오 인증 정보를 확인할 수 없습니다. 다시 로그인해주세요.")
+            return true
+        }
+
+        toast("카카오 로그인 처리 중입니다.")
+        Thread {
+            // The integration branch already has an equivalent PKCE token exchange method.
+            val result = runCatching { supabase.exchangeCodeForSession(code, verifier) }
+            runOnUiThread {
+                result.onSuccess { auth ->
+                    if (auth.isSignedIn && !auth.userId.isNullOrBlank() && persistAuthenticatedSession(auth)) {
+                        authPanel = AuthPanel.CLOSED
+                        // Identity verification in this branch is based on its backend profile,
+                        // not the local badge stored by an older MainActivity.
+                        verificationStep = VerificationStep.NONE
+                        loadCurrentProfile()
+                        loadRemoteItems()
+                        toast("카카오 로그인 완료")
+                    } else {
+                        toast("카카오 로그인 실패: ${auth.message}")
+                    }
+                    render()
+                }.onFailure { callbackError ->
+                    toast(callbackError.message ?: "카카오 로그인에 실패했습니다.")
+                }
+            }
+        }.start()
+        return true
+    }
+
     private fun startGoogleSignIn() {
         if (!supabase.isConfigured) {
             toast("Supabase 연결 정보를 먼저 설정해주세요.")
@@ -2743,7 +2823,7 @@ class MainActivity : Activity() {
         content.addView(sectionTitle("내 거래 이력", "참여한 예약과 거래 상태를 확인합니다.").withTop(16))
         val mine = reservations.filter { reservation ->
             reservation.remoteId != null && (reservation.remoteBorrowerId == sessionUserId ||
-                items.find { it.id == reservation.itemId }?.remoteOwnerId == sessionUserId)
+                    items.find { it.id == reservation.itemId }?.remoteOwnerId == sessionUserId)
         }
         if (mine.isEmpty()) content.addView(empty("표시할 거래가 없습니다. 예약 화면에서 새로고침할 수 있습니다."))
         mine.take(10).forEach { reservation ->
