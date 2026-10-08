@@ -53,6 +53,7 @@ android {
         targetSdk = 33
         versionCode = 5
         versionName = "1.4"
+        testInstrumentationRunner = "com.shareguard.app.ContractPdfSampleInstrumentation"
 
         buildConfigField("String", "SUPABASE_URL", buildConfigString("SUPABASE_URL"))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", buildConfigString("SUPABASE_PUBLISHABLE_KEY"))

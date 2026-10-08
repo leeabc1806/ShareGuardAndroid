@@ -34,6 +34,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -58,6 +59,8 @@ import com.shareguard.app.data.ServerApiClient
 import com.shareguard.app.data.IssuedQr
 import com.shareguard.app.data.PaymentState
 import com.shareguard.app.data.RemoteReview
+import com.shareguard.app.data.ContractPaymentDetails
+import org.json.JSONObject
 import java.time.Instant
 import androidx.core.content.FileProvider
 import com.google.zxing.BarcodeFormat
@@ -167,7 +170,10 @@ class MainActivity : Activity() {
         var longitude: Double? = null,
         var imagePaths: List<String> = emptyList(),
         var status: String = "active",
-        val available: Boolean = true
+        val available: Boolean = true,
+        var components: String? = null,
+        var knownDefects: String? = null,
+        var itemValue: Int? = null
     )
 
     private data class Reservation(
@@ -194,7 +200,11 @@ class MainActivity : Activity() {
         var refundHeld: Boolean = false,
         val remoteId: String? = null,
         var ownerSigned: Boolean = false,
-        var borrowerSigned: Boolean = false
+        var borrowerSigned: Boolean = false,
+        var ownerSignedAt: String? = null,
+        var borrowerSignedAt: String? = null,
+        var specialTerms: String? = null,
+        var snapshot: JSONObject = JSONObject()
     )
 
     private data class ChatMessage(val mine: Boolean, val text: String, val time: String = "방금", val read: Boolean = false)
@@ -341,6 +351,7 @@ class MainActivity : Activity() {
     private var pendingQrAction: String? = null
     private val qrPayloads = mutableMapOf<String, IssuedQr>()
     private val contractPdfFiles = mutableMapOf<Int, File>()
+    private val contractSpecialDrafts = mutableMapOf<Int, String>()
     private val chatHandler = Handler(Looper.getMainLooper())
     private val chatPoll = object : Runnable {
         override fun run() {
@@ -1500,9 +1511,12 @@ class MainActivity : Activity() {
         val titleInput = draftInput("title", editing?.title.orEmpty(), "물품명을 입력하세요")
         val priceInput = draftInput("price", editing?.price?.toString().orEmpty(), "하루 대여료").apply { inputType = InputType.TYPE_CLASS_NUMBER }
         val depositInput = draftInput("deposit", editing?.deposit?.toString().orEmpty(), "보증금").apply { inputType = InputType.TYPE_CLASS_NUMBER }
+        val componentsInput = draftInput("components", editing?.components.orEmpty(), "구성품 (선택, 최대 500자)")
+        val defectsInput = draftInput("known_defects", editing?.knownDefects.orEmpty(), "기존 하자 (선택, 최대 500자)")
+        val valueInput = draftInput("item_value", editing?.itemValue?.toString().orEmpty(), "물품 가액 (선택)").apply { inputType = InputType.TYPE_CLASS_NUMBER }
         val locationInput = draftInput("location", selectedRegistrationAddress ?: editing?.location.orEmpty(), "거래 위치")
         registrationLocationInput = locationInput
-        val descriptionInput = draftInput("description", editing?.description.orEmpty(), "구성품과 사용 상태를 적어주세요")
+        val descriptionInput = draftInput("description", editing?.description.orEmpty(), "물품 사용 설명을 적어주세요")
         content.addView(textView(if (editing == null) "사진과 정보를 등록해요" else "물품 정보를 수정해요", 21, true, text).withTop(18))
         content.addView(textView("정확한 정보와 사진은 더 빠르고 안전한 거래로 이어집니다.", 13, false, muted).withTop(3))
         content.addView(card(Color.rgb(248, 248, 255)).apply {
@@ -1547,6 +1561,9 @@ class MainActivity : Activity() {
         content.addView(card().apply {
             addView(field("제목", titleInput))
             addView(field("설명", descriptionInput))
+            addView(field("구성품", componentsInput))
+            addView(field("기존 하자", defectsInput))
+            addView(field("물품 가액", valueInput))
             addView(field("하루 대여료", priceInput))
             addView(field("보증금", depositInput))
             addView(field("거래 위치", locationInput))
@@ -1567,6 +1584,14 @@ class MainActivity : Activity() {
                 item.title = titleInput.text.toString().trim()
                 item.category = registerCategory
                 item.description = descriptionInput.text.toString().trim()
+                item.components = componentsInput.text.toString().trim().ifBlank { null }
+                item.knownDefects = defectsInput.text.toString().trim().ifBlank { null }
+                item.itemValue = valueInput.text.toString().trim().takeIf(String::isNotBlank)?.toIntOrNull()
+                if (componentsInput.text.length > 500 || defectsInput.text.length > 500 ||
+                    valueInput.text.isNotBlank() && item.itemValue == null) {
+                    toast("구성품·하자는 500자 이내, 물품 가액은 0 이상의 숫자로 입력하세요.")
+                    return@button
+                }
                 item.price = priceInput.text.toString().toIntOrNull() ?: 0
                 item.deposit = depositInput.text.toString().toIntOrNull() ?: 0
                 item.location = locationInput.text.toString().trim()
@@ -1768,28 +1793,79 @@ class MainActivity : Activity() {
         }.withTop(10))
         if (paid) {
             content.addView(textView("전자 대여 계약", 19, true, text).withTop(18))
+            // V8 terms must not be presented as if an already-signed legacy contract agreed to them.
+            val legacySigned = (contract.ownerSigned || contract.borrowerSigned) &&
+                contract.snapshot.optString("terms_version") != ContractTerms.TERMS_VERSION
+            if (legacySigned) {
+                content.addView(card().apply {
+                    addView(textView("기존 서명 계약", 15, true, text))
+                    addView(textView("이 계약의 서명 당시 조항은 현재 조항 ${ContractTerms.TERMS_VERSION}과 다를 수 있습니다. 새 조항을 소급 적용하거나 새 계약서 PDF로 표시하지 않습니다.", 13, false, muted).withTop(8))
+                    if (signed) addView(button("상태 사진 기록으로 이동") {
+                        activeContractId = contract.id
+                        screen = Screen.QR
+                        render()
+                    }.withTop(12))
+                }.withTop(10))
+                return
+            }
             content.addView(card().apply {
-                addView(textView("계약 주요 내용", 15, true, text))
+                addView(textView("계약 주요 내용 · 조항 ${ContractTerms.TERMS_VERSION}", 15, true, text))
                 addView(metric("대여 물품", item.title).withTop(8))
                 addView(metric("거래 장소", item.location))
-                addView(metric("파손·분실", "사진 기록 및 약관 기준으로 보증금 처리"))
-                addView(textView("☑ 대여 조건과 물품 상태 기록 의무를 확인했습니다.", 12, false, text).withTop(12))
-                if (!signed) {
+                addView(textView("계약 조항 전문 (아래 영역을 스크롤해 확인)", 13, true, text).withTop(12))
+                addView(ScrollView(this@MainActivity).apply {
+                    addView(column {
+                        ContractTerms.clauses.forEach { (title, body) ->
+                            addView(textView(title, 13, true, text).withTop(10))
+                            addView(textView(body, 12, false, text).withTop(3))
+                        }
+                    }.apply { setPadding(dp(10), dp(5), dp(10), dp(10)) })
+                    background = rounded(Color.rgb(248, 248, 255), 8)
+                }, LinearLayout.LayoutParams(match, dp(260)).apply { topMargin = dp(8) })
+                val ownSigned = if (item.remoteOwnerId == sessionUserId) contract.ownerSigned else contract.borrowerSigned
+                if (!contract.ownerSigned && !contract.borrowerSigned && contract.remoteId != null) {
+                    val specialInput = edit(contractSpecialDrafts[contract.id] ?: contract.specialTerms.orEmpty()).apply {
+                        hint = "특약사항 (선택, 최대 500자)"
+                        addTextChangedListener(object : TextWatcher {
+                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { contractSpecialDrafts[contract.id] = s.toString() }
+                            override fun afterTextChanged(s: Editable?) = Unit
+                        })
+                    }
+                    addView(field("특약사항", specialInput).withTop(10))
+                    addView(button("특약 저장", secondary = true) {
+                        saveContractSpecialTerms(contract, specialInput.text.toString())
+                    }.withTop(8))
+                } else addView(metric("특약사항", contract.specialTerms?.ifBlank { "없음" } ?: "없음").withTop(10))
+                if (!ownSigned) {
+                    val consent = CheckBox(this@MainActivity).apply {
+                        text = "계약 조항을 확인했으며 이에 동의합니다"
+                        textSize = 13f
+                    }
+                    addView(consent.withTop(12))
                     addView(textView("아래 영역에 손가락으로 서명하세요.", 13, true, text).withTop(14))
-                    val signaturePad = SignaturePadView(this@MainActivity)
+                    val signaturePad = SignaturePadView(this@MainActivity).apply { isEnabled = false; alpha = 0.5f }
+                    consent.setOnCheckedChangeListener { _, checked ->
+                        signaturePad.isEnabled = checked
+                        signaturePad.alpha = if (checked) 1f else 0.5f
+                        if (!checked) signaturePad.clear()
+                    }
                     addView(signaturePad, LinearLayout.LayoutParams(match, dp(150)).apply { topMargin = dp(8) })
                     addView(row {
                         addView(button("다시 쓰기", secondary = true) { signaturePad.clear() }, LinearLayout.LayoutParams(0, dp(44), 1f))
                         addView(space(8))
                         addView(button("서명·PDF 저장") {
-                            if (!signaturePad.isSigned) toast("전자 서명을 먼저 입력하세요.")
+                            if (!consent.isChecked) toast("계약 조항에 동의한 뒤 서명하세요.")
+                            else if (!signaturePad.isSigned) toast("전자 서명을 먼저 입력하세요.")
                             else sign(contract, signaturePad.toBitmap())
                         }, LinearLayout.LayoutParams(0, dp(44), 2f))
                     }.withTop(10))
-                } else {
-                    contractPdfFiles[contract.id]?.let { file ->
-                        addView(button("계약서 PDF 공유", secondary = true) { shareContractPdf(file) }.withTop(12))
-                    }
+                } else addView(statusChip(if (signed) "양측 서명 완료" else "내 서명 완료 · 상대방 서명 대기").withTop(10))
+                if (contract.ownerSigned || contract.borrowerSigned) {
+                    addView(button("계약서 PDF 열람", secondary = true) { generateContractPdf(contract, share = false) }.withTop(12))
+                    addView(button("계약서 PDF 공유", secondary = true) { generateContractPdf(contract, share = true) }.withTop(8))
+                }
+                if (signed) {
                     addView(button("상태 사진 기록으로 이동") {
                         activeContractId = contract.id
                         screen = Screen.QR
@@ -3249,7 +3325,11 @@ class MainActivity : Activity() {
             refunded = paymentStates[remote.reservationId]?.refunded == true,
             refundHeld = remote.status == "disputed",
             ownerSigned = remote.ownerSigned,
-            borrowerSigned = remote.borrowerSigned
+            borrowerSigned = remote.borrowerSigned,
+            ownerSignedAt = remote.ownerSignedAt,
+            borrowerSignedAt = remote.borrowerSignedAt,
+            specialTerms = remote.specialTerms,
+            snapshot = remote.snapshot
         )
     }
 
@@ -3297,7 +3377,10 @@ class MainActivity : Activity() {
                         deposit = item.deposit,
                         address = item.location,
                         latitude = item.latitude,
-                        longitude = item.longitude
+                        longitude = item.longitude,
+                        components = item.components,
+                        knownDefects = item.knownDefects,
+                        itemValue = item.itemValue
                     ),
                     token
                 )
@@ -3347,6 +3430,9 @@ class MainActivity : Activity() {
         remoteOwnerId = item.ownerId,
         latitude = item.latitude,
         longitude = item.longitude,
+        components = item.components,
+        knownDefects = item.knownDefects,
+        itemValue = item.itemValue,
         imagePaths = item.imagePaths,
         status = item.status,
         available = item.status == "active"
@@ -3467,7 +3553,8 @@ class MainActivity : Activity() {
                     }
                     supabase.updateItem(
                         remoteId,
-                        NewRemoteItem(item.title, item.category, item.description, item.price, item.deposit, item.location, item.latitude, item.longitude),
+                        NewRemoteItem(item.title, item.category, item.description, item.price, item.deposit, item.location, item.latitude, item.longitude,
+                            item.components, item.knownDefects, item.itemValue),
                         token
                     )
                     supabase.fetchItemsByIds(listOf(remoteId), token).single()
@@ -3711,31 +3798,42 @@ class MainActivity : Activity() {
             toast("계약 정보를 찾을 수 없습니다.")
             return
         }
-        val pdf = runCatching {
-            ContractPdfExporter.create(
-                this,
-                contract.remoteId ?: contract.id.toString(),
-                item.title,
-                "${reservation.startDate} ~ ${reservation.endDate}",
-                item.location,
-                money((reservation.totalAmount - reservation.depositAmount).coerceAtLeast(0)),
-                money(reservation.depositAmount),
-                currentUser().name,
-                signature
-            )
-        }.getOrElse { error ->
-            toast("계약서 PDF 생성 실패: ${error.message ?: "저장 공간을 확인하세요."}")
-            return
-        }
-        contractPdfFiles[contract.id] = pdf
         val token = sessionToken
         val remoteId = contract.remoteId
         if (supabase.isConfigured && token != null && remoteId != null) {
             toast("전자 서명을 서버에 저장 중입니다.")
+            val role = if (item.remoteOwnerId == sessionUserId) "owner" else "borrower"
+            val account = sessionUserId
             Thread {
-                val result = runCatching { supabase.signContract(remoteId, token) }
+                val result = runCatching {
+                    val bytes = ByteArrayOutputStream().use { stream ->
+                        check(signature.compress(Bitmap.CompressFormat.PNG, 100, stream))
+                        stream.toByteArray()
+                    }
+                    runCatching { supabase.uploadContractSignature(remoteId, role, bytes, token) }
+                        .getOrElse {
+                            // A previous unsigned attempt may have left an object at this fixed path.
+                            supabase.deleteUnsignedContractSignature(remoteId, role, token)
+                            supabase.uploadContractSignature(remoteId, role, bytes, token)
+                        }
+                    val signed = try { supabase.signContract(remoteId, token) }
+                    catch (error: Exception) {
+                        runCatching { supabase.deleteUnsignedContractSignature(remoteId, role, token) }
+                        throw error
+                    }
+                    val pdf = runCatching {
+                        val ownerImage = loadContractSignerBitmap(remoteId, "owner", signed.ownerSignedAt, token)
+                        val borrowerImage = loadContractSignerBitmap(remoteId, "borrower", signed.borrowerSignedAt, token)
+                        val payment = supabase.fetchContractPaymentDetails(remoteId, token)
+                        ContractPdfExporter.create(this, contractDocument(signed, ownerImage, borrowerImage, payment))
+                    }
+                    signed to pdf
+                }
                 runOnUiThread {
-                    result.onSuccess { signed ->
+                    if (account != sessionUserId) return@runOnUiThread
+                    result.onSuccess { (signed, pdf) ->
+                        pdf.onSuccess { contractPdfFiles[contract.id] = it }
+                            .onFailure { toast("서명은 저장됐지만 PDF 생성은 실패했습니다. 계약서에서 다시 시도하세요.") }
                         loadRemoteReservations()
                         val complete = signed.ownerSigned && signed.borrowerSigned
                         addNotification("✍", if (complete) "전자 계약 완료" else "전자 서명 완료", if (complete) "상태 사진을 등록하고 거래를 시작해주세요." else "상대방의 서명을 기다리고 있습니다.", Screen.QR)
@@ -3745,11 +3843,88 @@ class MainActivity : Activity() {
             }.start()
             return
         }
+        val demoSnapshot = JSONObject()
+            .put("item_title", item.title).put("item_category", item.category)
+            .put("components", item.components).put("known_defects", item.knownDefects)
+            .put("item_value", item.itemValue).put("daily_price", item.price)
+            .put("location", item.location).put("start_date", reservation.startDate)
+            .put("end_date", reservation.endDate)
+            .put("rental_fee", reservation.totalAmount - reservation.depositAmount)
+            .put("deposit", reservation.depositAmount).put("original_deposit", item.deposit)
+            .put("terms_version", ContractTerms.TERMS_VERSION)
+        contractPdfFiles[contract.id] = ContractPdfExporter.create(this, ContractDocument(
+            contract.id.toString(), demoSnapshot,
+            ContractSigner(currentUser().name, currentUser().verified, currentUser().trust, Instant.now().toString(), signature),
+            ContractSigner("상대방", false, 0, null, null), null
+        ))
         contract.status = ContractStatus.SIGNED
         addNotification("✍", "전자 계약 완료", "대여 전 상태 사진을 등록하고 QR 인증을 진행해주세요.", Screen.QR)
         screen = Screen.QR
         toast("전자 계약서 서명이 완료되었습니다.")
         render()
+    }
+
+    private fun saveContractSpecialTerms(contract: Contract, terms: String) {
+        if (terms.length > 500) { toast("특약은 500자 이하여야 합니다."); return }
+        val id = contract.remoteId ?: return
+        val token = sessionToken ?: return
+        val account = sessionUserId
+        Thread {
+            val result = runCatching { supabase.setContractSpecialTerms(id, terms, token) }
+            runOnUiThread {
+                if (account != sessionUserId) return@runOnUiThread
+                result.onSuccess { contractSpecialDrafts.remove(contract.id); loadRemoteReservations(); toast("특약이 저장되었습니다.") }
+                    .onFailure { toast("특약 저장 실패: ${it.message ?: "권한을 확인하세요."}") }
+            }
+        }.start()
+    }
+
+    private fun contractDocument(remote: RemoteContract, ownerImage: Bitmap?, borrowerImage: Bitmap?, payment: ContractPaymentDetails): ContractDocument {
+        val snapshot = remote.snapshot
+        return ContractDocument(
+            remote.id, snapshot,
+            ContractSigner(snapshot.optString("owner_nickname", "대여자"), snapshot.optBoolean("owner_verified"),
+                snapshot.optInt("owner_trust_score"), remote.ownerSignedAt, ownerImage),
+            ContractSigner(snapshot.optString("borrower_nickname", "임차인"), snapshot.optBoolean("borrower_verified"),
+                snapshot.optInt("borrower_trust_score"), remote.borrowerSignedAt, borrowerImage),
+            remote.specialTerms,
+            currentBeforePhotoCount = remote.beforePhotos,
+            paymentOrderId = payment.orderId,
+            paidAt = payment.paidAt
+        )
+    }
+
+    private fun loadContractSignerBitmap(id: String, role: String, signedAt: String?, token: String): Bitmap? {
+        if (signedAt == null) return null
+        val bytes = supabase.downloadContractSignature(id, role, token)
+            ?: error("서명 완료된 $role 이미지가 저장소에 없습니다.")
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: error("서명 완료된 $role 이미지를 읽을 수 없습니다.")
+    }
+
+    private fun generateContractPdf(contract: Contract, share: Boolean) {
+        val action: (File) -> Unit = if (share) ::shareContractPdf else ::openContractPdf
+        val id = contract.remoteId ?: return contractPdfFiles[contract.id]?.let(action) ?: Unit
+        val token = sessionToken ?: return
+        val account = sessionUserId
+        toast("서버의 최신 계약서와 양측 서명을 불러오는 중입니다.")
+        Thread {
+            val result = runCatching {
+                val latest = supabase.fetchContracts(token).first { it.id == id }
+                check(latest.snapshot.optString("terms_version") == ContractTerms.TERMS_VERSION) {
+                    "기존 서명 계약에는 새 조항을 적용한 PDF를 만들 수 없습니다."
+                }
+                val ownerImage = loadContractSignerBitmap(id, "owner", latest.ownerSignedAt, token)
+                val borrowerImage = loadContractSignerBitmap(id, "borrower", latest.borrowerSignedAt, token)
+                val payment = supabase.fetchContractPaymentDetails(id, token)
+                ContractPdfExporter.create(this, contractDocument(latest, ownerImage, borrowerImage, payment))
+            }
+            runOnUiThread {
+                if (account != sessionUserId) return@runOnUiThread
+                result.onSuccess { file -> contractPdfFiles[contract.id] = file; action(file) }
+                    .onFailure { toast("계약서 열람 실패: ${it.message ?: "네트워크를 확인하세요."}") }
+            }
+        }.start()
     }
 
     private fun shareContractPdf(file: File) {
@@ -3759,6 +3934,16 @@ class MainActivity : Activity() {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }, "전자 계약서 공유"))
+    }
+
+    private fun openContractPdf(file: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/pdf")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }.onFailure { toast("PDF 뷰어가 없습니다. 공유 버튼으로 열어주세요.") }
     }
 
     private fun addNotification(icon: String, title: String, body: String, target: Screen) {

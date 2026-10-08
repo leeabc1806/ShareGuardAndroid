@@ -1,5 +1,6 @@
 -- ShareGuard Supabase/PostgreSQL schema
--- Run once in Supabase Dashboard > SQL Editor.
+-- Run once only when creating a new database, then apply backend Flyway V1-V8
+-- (or the corresponding SQL migrations) in order. Never rerun this on an existing DB.
 
 create extension if not exists btree_gist with schema extensions;
 create schema if not exists private;
@@ -26,6 +27,9 @@ create table public.items (
     title text not null check (char_length(title) between 2 and 100),
     category text not null check (char_length(category) between 1 and 30),
     description text not null default '' check (char_length(description) <= 2000),
+    components text constraint items_components_length check (char_length(components) <= 500),
+    known_defects text constraint items_known_defects_length check (char_length(known_defects) <= 500),
+    item_value integer constraint items_item_value_nonnegative check (item_value >= 0),
     daily_price integer not null check (daily_price >= 0),
     deposit integer not null check (deposit >= 0),
     address text not null check (char_length(address) between 2 and 200),
@@ -89,6 +93,7 @@ create table public.rental_contracts (
     owner_signed_at timestamptz,
     borrower_signed_at timestamptz,
     contract_snapshot jsonb not null default '{}'::jsonb,
+    special_terms text constraint rental_contracts_special_terms_length check (char_length(special_terms) <= 500),
     status text not null default 'draft' check (status in ('draft', 'signed', 'active', 'completed', 'disputed')),
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()

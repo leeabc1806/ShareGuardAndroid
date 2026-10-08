@@ -35,7 +35,10 @@ data class RemoteItem(
     val latitude: Double?,
     val longitude: Double?,
     val imagePaths: List<String> = emptyList(),
-    val status: String = "active"
+    val status: String = "active",
+    val components: String? = null,
+    val knownDefects: String? = null,
+    val itemValue: Int? = null
 )
 
 data class NewRemoteItem(
@@ -46,7 +49,10 @@ data class NewRemoteItem(
     val deposit: Int,
     val address: String,
     val latitude: Double?,
-    val longitude: Double?
+    val longitude: Double?,
+    val components: String? = null,
+    val knownDefects: String? = null,
+    val itemValue: Int? = null
 )
 
 data class RemoteReservation(
@@ -68,8 +74,14 @@ data class RemoteContract(
     val ownerSigned: Boolean,
     val borrowerSigned: Boolean,
     val beforePhotos: Int = 0,
-    val afterPhotos: Int = 0
+    val afterPhotos: Int = 0,
+    val ownerSignedAt: String? = null,
+    val borrowerSignedAt: String? = null,
+    val specialTerms: String? = null,
+    val snapshot: JSONObject = JSONObject()
 )
+
+data class ContractPaymentDetails(val orderId: String?, val paidAt: String?)
 
 data class RemoteChatMessage(
     val id: Long,
@@ -106,7 +118,7 @@ class SupabaseRestClient(
     private val baseUrl: String,
     private val publishableKey: String
 ) {
-    private val itemSelect = "id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude,status,item_images(storage_path,sort_order)"
+    private val itemSelect = "id,owner_id,title,category,description,daily_price,deposit,address,latitude,longitude,status,components,known_defects,item_value,item_images(storage_path,sort_order)"
 
     fun itemImageUrl(path: String): String = baseUrl.trimEnd('/') +
         "/storage/v1/object/public/item-images/" + path.split('/').joinToString("/") { Uri.encode(it) }
@@ -224,7 +236,10 @@ class SupabaseRestClient(
                 latitude = row.optNullableDouble("latitude"),
                 longitude = row.optNullableDouble("longitude"),
                 imagePaths = row.imagePaths(),
-                status = row.optString("status", "active")
+                status = row.optString("status", "active"),
+                components = row.optNullableString("components"),
+                knownDefects = row.optNullableString("known_defects"),
+                itemValue = row.optNullableInt("item_value")
             )
         }
     }
@@ -234,7 +249,7 @@ class SupabaseRestClient(
         check(response.isSuccessful) { response.errorMessage() }
         val rows = JSONArray(response.body)
         (0 until rows.length()).map { index -> rows.getJSONObject(index).let { row ->
-            RemoteItem(row.getString("id"), row.getString("owner_id"), row.getString("title"), row.getString("category"), row.optString("description"), row.getInt("daily_price"), row.getInt("deposit"), row.getString("address"), row.optNullableDouble("latitude"), row.optNullableDouble("longitude"), row.imagePaths(), row.optString("status", "active"))
+            RemoteItem(row.getString("id"), row.getString("owner_id"), row.getString("title"), row.getString("category"), row.optString("description"), row.getInt("daily_price"), row.getInt("deposit"), row.getString("address"), row.optNullableDouble("latitude"), row.optNullableDouble("longitude"), row.imagePaths(), row.optString("status", "active"), row.optNullableString("components"), row.optNullableString("known_defects"), row.optNullableInt("item_value"))
         } }
     }
 
@@ -303,6 +318,9 @@ class SupabaseRestClient(
             .put("daily_price", item.dailyPrice)
             .put("deposit", item.deposit)
             .put("address", item.address)
+            .put("components", item.components?.takeIf(String::isNotBlank) ?: JSONObject.NULL)
+            .put("known_defects", item.knownDefects?.takeIf(String::isNotBlank) ?: JSONObject.NULL)
+            .put("item_value", item.itemValue ?: JSONObject.NULL)
             .putNullable("latitude", item.latitude)
             .putNullable("longitude", item.longitude)
         val response = request(
@@ -324,7 +342,10 @@ class SupabaseRestClient(
             deposit = row.getInt("deposit"),
             address = row.optString("address", "거래 위치 협의"),
             latitude = row.optNullableDouble("latitude"),
-            longitude = row.optNullableDouble("longitude")
+            longitude = row.optNullableDouble("longitude"),
+            components = row.optNullableString("components"),
+            knownDefects = row.optNullableString("known_defects"),
+            itemValue = row.optNullableInt("item_value")
         )
     }
 
@@ -336,6 +357,9 @@ class SupabaseRestClient(
             .put("daily_price", item.dailyPrice)
             .put("deposit", item.deposit)
             .put("address", item.address)
+            .put("components", item.components?.takeIf(String::isNotBlank) ?: JSONObject.NULL)
+            .put("known_defects", item.knownDefects?.takeIf(String::isNotBlank) ?: JSONObject.NULL)
+            .put("item_value", item.itemValue ?: JSONObject.NULL)
             .putNullable("latitude", item.latitude)
             .putNullable("longitude", item.longitude)
         val response = request(
@@ -357,7 +381,10 @@ class SupabaseRestClient(
             deposit = row.getInt("deposit"),
             address = row.optString("address", "거래 위치 협의"),
             latitude = row.optNullableDouble("latitude"),
-            longitude = row.optNullableDouble("longitude")
+            longitude = row.optNullableDouble("longitude"),
+            components = row.optNullableString("components"),
+            knownDefects = row.optNullableString("known_defects"),
+            itemValue = row.optNullableInt("item_value")
         )
     }
 
@@ -430,7 +457,7 @@ class SupabaseRestClient(
 
     fun fetchContracts(accessToken: String): List<RemoteContract> {
         val response = request(
-            "/rest/v1/rental_contracts?select=id,reservation_id,status,owner_signed_at,borrower_signed_at&order=created_at.desc",
+            "/rest/v1/rental_contracts?select=id,reservation_id,status,owner_signed_at,borrower_signed_at,special_terms,contract_snapshot&order=created_at.desc",
             "GET",
             accessToken = accessToken
         )
@@ -464,7 +491,11 @@ class SupabaseRestClient(
                 ownerSigned = !row.isNull("owner_signed_at"),
                 borrowerSigned = !row.isNull("borrower_signed_at"),
                 beforePhotos = photoCount.first,
-                afterPhotos = photoCount.second
+                afterPhotos = photoCount.second,
+                ownerSignedAt = row.optNullableString("owner_signed_at"),
+                borrowerSignedAt = row.optNullableString("borrower_signed_at"),
+                specialTerms = row.optNullableString("special_terms"),
+                snapshot = row.optJSONObject("contract_snapshot") ?: JSONObject()
             )
         }
     }
@@ -505,6 +536,51 @@ class SupabaseRestClient(
     fun signContract(contractId: String, accessToken: String): RemoteContract {
         val response = rpc("sign_rental_contract", JSONObject().put("p_contract_id", contractId), accessToken)
         return JSONObject(response.body).toRemoteContract()
+    }
+
+    fun setContractSpecialTerms(contractId: String, terms: String, token: String): RemoteContract {
+        require(terms.length <= 500) { "특약은 500자 이하여야 합니다." }
+        return JSONObject(rpc("set_contract_special_terms", JSONObject()
+            .put("p_contract_id", contractId).put("p_special_terms", terms), token).body).toRemoteContract()
+    }
+
+    fun fetchContractPaymentDetails(contractId: String, token: String): ContractPaymentDetails {
+        val row = JSONObject(rpc("get_contract_payment_details", JSONObject()
+            .put("p_contract_id", contractId), token).body)
+        return ContractPaymentDetails(row.optNullableString("order_id"), row.optNullableString("paid_at"))
+    }
+
+    fun uploadContractSignature(contractId: String, role: String, bytes: ByteArray, token: String) {
+        require(role == "owner" || role == "borrower")
+        require(bytes.isNotEmpty() && bytes.size <= 1_048_576) { "서명 이미지는 1MB 이하여야 합니다." }
+        val response = binaryRequest("/storage/v1/object/contract-signatures/$contractId/$role.png", "POST", bytes, "image/png", token)
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun deleteUnsignedContractSignature(contractId: String, role: String, token: String) {
+        require(role == "owner" || role == "borrower")
+        val response = request("/storage/v1/object/contract-signatures/$contractId/$role.png", "DELETE", accessToken = token)
+        if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
+    }
+
+    fun downloadContractSignature(contractId: String, role: String, token: String): ByteArray? {
+        require(role == "owner" || role == "borrower")
+        check(isConfigured)
+        val connection = URL(baseUrl.trimEnd('/') + "/storage/v1/object/authenticated/contract-signatures/$contractId/$role.png").openConnection() as HttpURLConnection
+        return try {
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 20_000
+            connection.setRequestProperty("apikey", publishableKey)
+            connection.setRequestProperty("Authorization", "Bearer $token")
+            if (connection.responseCode == 404) null else {
+                if (connection.responseCode !in 200..299) throw IllegalStateException("서명 조회 실패 (HTTP ${connection.responseCode})")
+                connection.inputStream.use { input ->
+                    val bytes = input.readBytes()
+                    require(bytes.size <= 1_048_576) { "서명 이미지가 너무 큽니다." }
+                    bytes
+                }
+            }
+        } finally { connection.disconnect() }
     }
 
     fun uploadConditionPhoto(
@@ -720,7 +796,11 @@ class SupabaseRestClient(
         reservationId = getString("reservation_id"),
         status = getString("status"),
         ownerSigned = !isNull("owner_signed_at"),
-        borrowerSigned = !isNull("borrower_signed_at")
+        borrowerSigned = !isNull("borrower_signed_at"),
+        ownerSignedAt = optNullableString("owner_signed_at"),
+        borrowerSignedAt = optNullableString("borrower_signed_at"),
+        specialTerms = optNullableString("special_terms"),
+        snapshot = optJSONObject("contract_snapshot") ?: JSONObject()
     )
 
     private fun JSONObject.toRemoteReservation() = RemoteReservation(
@@ -815,6 +895,12 @@ class SupabaseRestClient(
 
     private fun JSONObject.optNullableDouble(name: String): Double? =
         if (isNull(name)) null else optDouble(name).takeUnless(Double::isNaN)
+
+    private fun JSONObject.optNullableString(name: String): String? =
+        if (isNull(name)) null else optString(name)
+
+    private fun JSONObject.optNullableInt(name: String): Int? =
+        if (isNull(name)) null else getInt(name)
 
     private fun JSONObject.putNullable(name: String, value: Double?): JSONObject =
         if (value == null) put(name, JSONObject.NULL) else put(name, value)
