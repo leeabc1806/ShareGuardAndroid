@@ -14,6 +14,7 @@ import com.shareguard.app.data.RemoteChatRoom
 import com.shareguard.app.data.RemoteDateRequest
 import android.app.DatePickerDialog
 import android.content.Intent
+import android.content.ClipData
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -28,6 +29,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
@@ -196,6 +198,8 @@ class MainActivity : Activity() {
         var status: ContractStatus,
         var beforePhotos: Int = 0,
         var afterPhotos: Int = 0,
+        var beforePhotoPaths: List<String> = emptyList(),
+        var afterPhotoPaths: List<String> = emptyList(),
         var refunded: Boolean = false,
         var refundHeld: Boolean = false,
         val remoteId: String? = null,
@@ -307,6 +311,14 @@ class MainActivity : Activity() {
     private var activeChatRoomId: String? = null
     private var pendingPhotoContractId: String? = null
     private var pendingPhotoPhase: String? = null
+    private var pendingPhotoUri: Uri? = null
+    private var pendingPhotoUserId: String? = null
+    private var conditionPhotoUploading = false
+    private var conditionPhotoAwaitingResult = false
+    private var conditionCameraPermissionPending = false
+    private val reviewRatings = mutableMapOf<Int, Int>()
+    private val reviewComments = mutableMapOf<Int, String>()
+    private var reviewSaving = false
     private var authPanel = AuthPanel.CLOSED
     private var verificationStep = VerificationStep.NONE
     private var verificationCodeSent = false
@@ -329,6 +341,10 @@ class MainActivity : Activity() {
 
     private var editingItemId: Int? = null
     private val registrationPhotoUris = mutableListOf<Uri>()
+    private var pendingItemCameraUri: Uri? = null
+    private var itemCameraPermissionPending = false
+    private val itemCameraRequest = 7107
+    private val itemCameraPermissionRequest = 7108
     private var chatDetailOpen = false
     private var reservationTab = "빌린 물품"
     private var activeContractId: Int? = null
@@ -377,6 +393,8 @@ class MainActivity : Activity() {
     private val afterPhotoRequest = 7102
     private val itemPhotoRequest = 7103
     private val chatMediaRequest = 7104
+    private val conditionCameraPermissionRequest = 7105
+    private val conditionGalleryRequest = 7106
 
     private val users = mutableListOf(
         User(1, "김민수", "대여자", true, 850, 4.9, 28, 120),
@@ -441,6 +459,38 @@ class MainActivity : Activity() {
             chatMessages.clear()
         }
         captureNotificationIntent(intent)
+        savedInstanceState?.let { state ->
+            if (state.getString("draft_user") != sessionUserId) return@let
+            pendingItemCameraUri = state.getString("item_camera_uri")?.let(Uri::parse)
+            itemCameraPermissionPending = state.getBoolean("item_camera_permission")
+            registrationPhotoUris.addAll(state.getStringArrayList("item_photos").orEmpty().map(Uri::parse))
+            state.getBundle("item_draft")?.let { draft -> draft.keySet().forEach { registrationDraft[it] = draft.getString(it).orEmpty() } }
+            if (state.containsKey("editing_item")) editingItemId = state.getInt("editing_item")
+            registerCategory = state.getString("item_category") ?: registerCategory
+            registerTab = state.getString("item_tab") ?: registerTab
+            if (state.containsKey("item_lat")) selectedRegistrationLatitude = state.getDouble("item_lat")
+            if (state.containsKey("item_lon")) selectedRegistrationLongitude = state.getDouble("item_lon")
+            selectedRegistrationAddress = state.getString("item_address")
+            if (state.getBoolean("item_screen")) screen = Screen.REGISTER
+            activeContractId = if (state.containsKey("active_contract")) state.getInt("active_contract") else null
+            rentalStep = runCatching { RentalStep.valueOf(state.getString("rental_step") ?: rentalStep.name) }.getOrDefault(rentalStep)
+            pendingPhotoContractId = state.getString("condition_contract")
+            pendingPhotoPhase = state.getString("condition_phase")
+            pendingPhotoUserId = state.getString("condition_user")
+            pendingPhotoUri = state.getString("condition_uri")?.let(Uri::parse)
+            conditionPhotoAwaitingResult = state.getBoolean("condition_awaiting")
+            conditionCameraPermissionPending = state.getBoolean("condition_permission")
+            if (pendingPhotoContractId != null) {
+                screen = Screen.RENTAL_FLOW
+                rentalStep = if (pendingPhotoPhase == "after") RentalStep.RETURN_INSPECT else RentalStep.HANDOVER_PHOTOS
+            }
+            state.getBundle("review_ratings")?.let { drafts ->
+                drafts.keySet().forEach { reviewRatings[it.toInt()] = drafts.getInt(it) }
+            }
+            state.getBundle("review_comments")?.let { drafts ->
+                drafts.keySet().forEach { reviewComments[it.toInt()] = drafts.getString(it).orEmpty() }
+            }
+        }
         buildShell()
         render()
         sessionNotice?.let(::toast)
@@ -453,6 +503,32 @@ class MainActivity : Activity() {
             loadCurrentProfile()
             loadRemoteItems()
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("draft_user", sessionUserId)
+        outState.putString("item_camera_uri", pendingItemCameraUri?.toString())
+        outState.putBoolean("item_camera_permission", itemCameraPermissionPending)
+        outState.putStringArrayList("item_photos", ArrayList(registrationPhotoUris.map(Uri::toString)))
+        outState.putBundle("item_draft", Bundle().apply { registrationDraft.forEach { (key, value) -> putString(key, value) } })
+        editingItemId?.let { outState.putInt("editing_item", it) }
+        outState.putString("item_category", registerCategory)
+        outState.putString("item_tab", registerTab)
+        selectedRegistrationLatitude?.let { outState.putDouble("item_lat", it) }
+        selectedRegistrationLongitude?.let { outState.putDouble("item_lon", it) }
+        outState.putString("item_address", selectedRegistrationAddress)
+        outState.putBoolean("item_screen", screen == Screen.REGISTER)
+        activeContractId?.let { outState.putInt("active_contract", it) }
+        outState.putString("rental_step", rentalStep.name)
+        outState.putString("condition_contract", pendingPhotoContractId)
+        outState.putString("condition_phase", pendingPhotoPhase)
+        outState.putString("condition_user", pendingPhotoUserId)
+        outState.putString("condition_uri", pendingPhotoUri?.toString())
+        outState.putBoolean("condition_awaiting", conditionPhotoAwaitingResult)
+        outState.putBoolean("condition_permission", conditionCameraPermissionPending)
+        outState.putBundle("review_ratings", Bundle().apply { reviewRatings.forEach { (id, value) -> putInt(id.toString(), value) } })
+        outState.putBundle("review_comments", Bundle().apply { reviewComments.forEach { (id, value) -> putString(id.toString(), value) } })
+        super.onSaveInstanceState(outState)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -545,6 +621,22 @@ class MainActivity : Activity() {
             handleTossPaymentResult(resultCode, data)
             return
         }
+        if (requestCode == itemCameraRequest) {
+            val uri = pendingItemCameraUri
+            pendingItemCameraUri = null
+            if (uri != null) {
+                runCatching { revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+                val hasImage = runCatching { contentResolver.openInputStream(uri)?.use { it.read() != -1 } == true }.getOrDefault(false)
+                if (resultCode == RESULT_OK && hasImage && itemPhotoCount() < 5) {
+                    registrationPhotoUris.add(uri)
+                } else {
+                    runCatching { contentResolver.delete(uri, null, null) }
+                    if (resultCode == RESULT_OK) toast("사진을 추가하지 못했습니다. 사진 개수를 확인하고 다시 촬영해주세요.")
+                }
+            }
+            render()
+            return
+        }
         if (requestCode == itemPhotoRequest) {
             if (resultCode == RESULT_OK) {
                 val selected = mutableListOf<Uri>()
@@ -569,30 +661,26 @@ class MainActivity : Activity() {
             if (resultCode == RESULT_OK) data?.data?.let(::uploadChatMedia)
             return
         }
-        if (resultCode != RESULT_OK || requestCode !in listOf(beforePhotoRequest, afterPhotoRequest)) return
-        val uri = data?.data ?: return
-        val token = sessionToken ?: return
-        val userId = sessionUserId ?: return
-        val contractId = pendingPhotoContractId ?: return
-        val phase = pendingPhotoPhase ?: return
-        val mimeType = contentResolver.getType(uri) ?: "image/jpeg"
-        val bytes = runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-        if (bytes == null) {
-            toast("사진을 읽을 수 없습니다.")
+        if (requestCode !in listOf(beforePhotoRequest, afterPhotoRequest, conditionGalleryRequest)) return
+        conditionPhotoAwaitingResult = false
+        if (resultCode != RESULT_OK) {
+            clearPendingConditionPhoto()
+            render()
             return
         }
-        toast("상태 사진을 업로드 중입니다.")
-        Thread {
-            val result = runCatching {
-                supabase.uploadConditionPhoto(contractId, phase, userId, bytes, mimeType, token)
-            }
-            runOnUiThread {
-                result.onSuccess {
-                    loadRemoteReservations()
-                    toast("상태 사진이 서버에 저장되었습니다.")
-                }.onFailure { error -> toast("사진 업로드 실패: ${error.message ?: "파일과 권한을 확인하세요."}") }
-            }
-        }.start()
+        if (requestCode == conditionGalleryRequest) {
+            pendingPhotoUri = data?.data
+            pendingPhotoUri?.let { uri -> runCatching {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } }
+        }
+        // Camera apps write to EXTRA_OUTPUT and commonly return a null Intent.
+        if (pendingPhotoUri == null) {
+            clearPendingConditionPhoto()
+            toast("사진을 읽을 수 없습니다. 다시 촬영해주세요.")
+            return
+        }
+        uploadPendingConditionPhoto()
     }
 
     @Suppress("DEPRECATION")
@@ -1510,6 +1598,22 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == itemCameraPermissionRequest) {
+            itemCameraPermissionPending = false
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) openItemCamera()
+            else toast("카메라 권한을 허용하면 촬영할 수 있습니다. 사진 선택으로도 추가할 수 있습니다.")
+            return
+        }
+        if (requestCode == conditionCameraPermissionRequest) {
+            conditionCameraPermissionPending = false
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) launchConditionCamera()
+            else {
+                clearPendingConditionPhoto()
+                toast("카메라 권한을 허용하면 바로 촬영할 수 있습니다. 갤러리에서 선택도 가능합니다.")
+                render()
+            }
+            return
+        }
         if (requestCode == LOCATION_PERMISSION_REQUEST) {
             if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) requestCurrentLocation()
             else toast("위치 권한이 없어 데모 거리를 사용합니다.")
@@ -1530,6 +1634,11 @@ class MainActivity : Activity() {
         }
 
         val editing = editingItemId?.let { id -> items.find { it.id == id } }
+        if (editingItemId != null && editing == null) {
+            content.addView(empty("수정할 물품 정보를 불러오는 중입니다."))
+            content.addView(button("다시 불러오기", secondary = true) { loadRemoteItems() })
+            return
+        }
         val titleInput = draftInput("title", editing?.title.orEmpty(), "물품명을 입력하세요")
         val priceInput = draftInput("price", editing?.price?.toString().orEmpty(), "하루 대여료").apply { inputType = InputType.TYPE_CLASS_NUMBER }
         val depositInput = draftInput("deposit", editing?.deposit?.toString().orEmpty(), "보증금").apply { inputType = InputType.TYPE_CLASS_NUMBER }
@@ -1573,6 +1682,7 @@ class MainActivity : Activity() {
                 if (registrationPhotoUris.size + existingPhotoCount >= 5) toast("사진은 최대 5장까지 등록할 수 있습니다.")
                 else openItemPhotoPicker()
             }.withTop(10))
+            addView(button("+ 카메라로 촬영", secondary = true) { openItemCamera() }.withTop(8))
         }.withTop(12))
         content.addView(textView("카테고리", 14, true, text).withTop(18))
         content.addView(categoryStrip(itemCategories, if (registerCategory == "IT") "IT기기" else registerCategory,
@@ -2279,21 +2389,34 @@ class MainActivity : Activity() {
 
     private fun renderConditionPhotos(contract: Contract, after: Boolean) {
         val count = if (after) contract.afterPhotos else contract.beforePhotos
+        val phase = if (after) "after" else "before"
         content.addView(card(Color.rgb(248, 248, 255)).apply {
             addView(textView(if (after) "반납 후 상태 사진" else "대여 전 상태 사진", 19, true, text))
             addView(textView(if (after) "반납 직후 같은 각도로 촬영하면 분쟁을 예방할 수 있어요." else "물품 전체와 흠집, 구성품을 최대 5장으로 남겨주세요.", 12, false, muted).withTop(4))
-            addView(photoSlots(count).withTop(12))
-            addView(button(if (count == 0) "+ 상태 사진 촬영/선택" else "사진 추가  $count/5", secondary = true) {
-                if (contract.remoteId != null && sessionToken != null) openPhotoPicker(contract, if (after) "after" else "before")
-                else if (!after && contract.status in setOf(ContractStatus.SIGNED, ContractStatus.READY)) {
-                    contract.beforePhotos = 5
-                    contract.status = ContractStatus.READY
-                    render()
-                } else if (after && contract.status == ContractStatus.RENTING) {
-                    contract.afterPhotos = 5
-                    render()
-                } else toast("거래 상태를 확인한 뒤 사진을 등록하세요.")
-            }.apply { isEnabled = count < 5 }.withTop(10))
+            if (contract.remoteId == null) {
+                addView(metric("시연 상태 사진", "$count/5").withTop(12))
+                addView(button("상태 사진 기록 시연") {
+                    if (!after && contract.status in setOf(ContractStatus.SIGNED, ContractStatus.READY)) {
+                        contract.beforePhotos = 5
+                        contract.status = ContractStatus.READY
+                        render()
+                    } else if (after && contract.status == ContractStatus.RENTING) {
+                        contract.afterPhotos = 5
+                        render()
+                    }
+                }.apply { isEnabled = count < 5 }.withTop(10))
+            } else {
+                val paths = if (after) contract.afterPhotoPaths else contract.beforePhotoPaths
+                addView(photoSlots(paths) { openPhotoPicker(contract, phase) }.withTop(12))
+                addView(button(if (conditionPhotoUploading) "사진 업로드 중…" else "카메라로 상태 사진 촬영  $count/5") {
+                    openPhotoPicker(contract, phase)
+                }.apply { isEnabled = count < 5 && !conditionPhotoUploading }.withTop(10))
+                addView(button("갤러리에서 선택", secondary = true) { openPhotoPicker(contract, phase, camera = false) }
+                    .apply { isEnabled = count < 5 && !conditionPhotoUploading }.withTop(8))
+                if (pendingPhotoUri != null && !conditionPhotoAwaitingResult && !conditionPhotoUploading && pendingPhotoContractId == contract.remoteId && pendingPhotoPhase == phase) {
+                    addView(button("사진 업로드 다시 시도", secondary = true) { uploadPendingConditionPhoto() }.withTop(8))
+                }
+            }
         }.withTop(12))
     }
 
@@ -2479,14 +2602,42 @@ class MainActivity : Activity() {
         }.withTop(14))
         content.addView(textView("거래는 어떠셨나요?", 21, true, text).withTop(18))
         content.addView(textView("후기는 상대방의 신뢰 지수에 반영됩니다.", 12, false, muted).withTop(3))
-        val reviewInput = edit("물품 상태가 좋고 약속 시간이 정확했어요.")
+        val reviewInput = edit(reviewComments[reservation.id].orEmpty()).apply {
+            hint = "거래 경험을 남겨주세요."
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { reviewComments[reservation.id] = s.toString() }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
         content.addView(card().apply {
-            addView(textView("★ ★ ★ ★ ★", 30, true, warn).apply { gravity = Gravity.CENTER })
-            addView(textView("5.0 · 매우 만족", 13, true, text).apply { gravity = Gravity.CENTER }.withTop(4))
+            val scoreLabel = textView("별을 눌러 1~5점을 선택해주세요.", 13, true, text).apply { gravity = Gravity.CENTER }
+            val stars = (1..5).map { score -> Button(this@MainActivity).apply {
+                textSize = 28f
+                setPadding(0, 0, 0, 0)
+                minWidth = 0
+                contentDescription = "별점 ${score}점"
+            } }
+            fun updateStars() {
+                val score = reviewRatings[reservation.id] ?: 0
+                stars.forEachIndexed { index, star ->
+                    star.text = if (index < score) "★" else "☆"
+                    star.setTextColor(if (index < score) warn else muted)
+                    star.isSelected = index + 1 == score
+                }
+                scoreLabel.text = if (score == 0) "별을 눌러 1~5점을 선택해주세요." else "$score / 5점"
+            }
+            stars.forEachIndexed { index, star -> star.setOnClickListener {
+                reviewRatings[reservation.id] = index + 1
+                updateStars()
+            } }
+            addView(row { stars.forEach { addView(it, LinearLayout.LayoutParams(0, dp(56), 1f)) } })
+            addView(scoreLabel.withTop(4))
+            updateStars()
             addView(field("상세 후기", reviewInput).withTop(12))
             addView(button("후기 등록하기") {
                 if (contract.status != ContractStatus.COMPLETED) toast("반납 완료 후 후기를 작성할 수 있습니다.")
-                else createReview(reservation, reviewInput.text.toString().trim())
+                else createReview(reservation, reviewRatings[reservation.id] ?: 0, reviewInput.text.toString().trim())
             }.withTop(10))
         }.withTop(10))
         content.addView(textView("거래에 문제가 있나요?", 19, true, text).withTop(20))
@@ -3332,7 +3483,7 @@ class MainActivity : Activity() {
                         for (index in items.indices) items[index] = items[index].copy(available = false)
                         remote.forEach { upsertItem(remoteToItem(it)) }
                         if (sessionToken != null) loadRemoteReservations()
-                        if (screen in setOf(Screen.HOME, Screen.MAP, Screen.DETAIL)) render()
+                        if (screen in setOf(Screen.HOME, Screen.MAP, Screen.DETAIL) || (screen == Screen.REGISTER && editingItemId != null)) render()
                     }.onFailure { toast("물품 조회 실패: ${it.message}") }
                 } finally {
                     itemsLoading = false
@@ -3342,7 +3493,11 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun openPhotoPicker(contract: Contract, phase: String) {
+    private fun openPhotoPicker(contract: Contract, phase: String, camera: Boolean = true) {
+        if (conditionPhotoUploading || conditionPhotoAwaitingResult || conditionCameraPermissionPending) {
+            toast("사진 처리가 끝난 뒤 다시 눌러주세요.")
+            return
+        }
         if (phase == "before" && contract.status !in listOf(ContractStatus.SIGNED, ContractStatus.READY)) {
             toast("양측 전자 서명 후 대여 전 사진을 등록할 수 있습니다.")
             return
@@ -3351,13 +3506,124 @@ class MainActivity : Activity() {
             toast("대여중 상태에서 반납 후 사진을 등록할 수 있습니다.")
             return
         }
+        if ((if (phase == "before") contract.beforePhotos else contract.afterPhotos) >= 5) {
+            toast("단계별 상태 사진은 최대 5장까지 등록할 수 있습니다.")
+            return
+        }
+        if (contract.remoteId == null || sessionUserId == null || sessionToken == null) {
+            toast("로그인된 서버 거래에서 상태 사진을 등록할 수 있습니다.")
+            return
+        }
+        clearPendingConditionPhoto()
         pendingPhotoContractId = contract.remoteId
         pendingPhotoPhase = phase
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "image/*"
+        pendingPhotoUserId = sessionUserId
+        if (camera) {
+            // CAMERA is also declared by the QR scanner dependency.
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                conditionCameraPermissionPending = true
+                requestPermissions(arrayOf(Manifest.permission.CAMERA), conditionCameraPermissionRequest)
+            } else launchConditionCamera()
+        } else {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            }
+            runCatching {
+                conditionPhotoAwaitingResult = true
+                startActivityForResult(intent, conditionGalleryRequest)
+            }.onFailure {
+                clearPendingConditionPhoto()
+                toast("사진 선택 앱을 열 수 없습니다.")
+            }
         }
-        startActivityForResult(intent, if (phase == "before") beforePhotoRequest else afterPhotoRequest)
+    }
+
+    private fun launchConditionCamera() {
+        if (pendingPhotoUserId != sessionUserId || pendingPhotoContractId == null) {
+            clearPendingConditionPhoto()
+            return
+        }
+        runCatching {
+            val directory = File(cacheDir, "condition_photos").apply { mkdirs() }
+            val photo = File.createTempFile("condition_", ".jpg", directory)
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", photo)
+            pendingPhotoUri = uri
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                clipData = ClipData.newRawUri("물품 상태 사진", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            conditionPhotoAwaitingResult = true
+            startActivityForResult(intent, if (pendingPhotoPhase == "before") beforePhotoRequest else afterPhotoRequest)
+        }.onFailure {
+            clearPendingConditionPhoto()
+            toast("카메라를 열 수 없습니다. 권한을 확인하거나 갤러리에서 선택해주세요.")
+        }
+    }
+
+    private fun clearPendingConditionPhoto() {
+        pendingPhotoUri?.takeIf { it.authority == "$packageName.files" }?.let { uri ->
+            runCatching { revokeUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            runCatching { contentResolver.delete(uri, null, null) }
+        }
+        pendingPhotoUri = null
+        pendingPhotoContractId = null
+        pendingPhotoPhase = null
+        pendingPhotoUserId = null
+        conditionPhotoAwaitingResult = false
+        conditionCameraPermissionPending = false
+    }
+
+    private fun uploadPendingConditionPhoto() {
+        if (conditionPhotoUploading) return
+        val uri = pendingPhotoUri ?: return
+        val account = pendingPhotoUserId ?: return
+        val contractId = pendingPhotoContractId ?: return
+        val phase = pendingPhotoPhase ?: return
+        if (sessionUserId != account || sessionToken == null) {
+            clearPendingConditionPhoto()
+            toast("촬영한 계정으로 다시 로그인해주세요.")
+            return
+        }
+        conditionPhotoUploading = true
+        toast("상태 사진을 업로드 중입니다.")
+        render()
+        Thread {
+            val result = runCatching {
+                val auth = SessionTokens.refresh(this, supabase)
+                check(auth.userId == account) { "로그인 계정이 변경되었습니다." }
+                val bytes = ConditionPhotoEncoder.encode(contentResolver, uri)
+                val path = supabase.uploadConditionPhoto(contractId, phase, account, bytes, "image/jpeg", auth.accessToken!!)
+                auth.accessToken to path
+            }
+            runOnUiThread {
+                conditionPhotoUploading = false
+                if (sessionUserId != account) return@runOnUiThread
+                result.onSuccess { (token, path) ->
+                    sessionToken = token
+                    contracts.find { it.remoteId == contractId }?.let { contract ->
+                        activeContractId = contract.id
+                        if (phase == "before") {
+                            contract.beforePhotoPaths = contract.beforePhotoPaths + path
+                            contract.beforePhotos++
+                            if (contract.status == ContractStatus.SIGNED) contract.status = ContractStatus.READY
+                        } else {
+                            contract.afterPhotoPaths = contract.afterPhotoPaths + path
+                            contract.afterPhotos++
+                        }
+                        Unit
+                    }
+                    clearPendingConditionPhoto()
+                    loadRemoteReservations()
+                    toast("상태 사진이 서버에 저장되었습니다.")
+                }.onFailure { error ->
+                    toast("사진 업로드 실패: ${error.message ?: "연결을 확인하세요."} · 다시 시도할 수 있습니다.")
+                }
+                render()
+            }
+        }.start()
     }
 
     private fun issueServerQr(contract: Contract, action: String) {
@@ -3381,6 +3647,36 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun itemPhotoCount(): Int = registrationPhotoUris.size + (items.find { it.id == editingItemId }?.imagePaths?.size ?: 0)
+
+    private fun openItemCamera() {
+        if (registrationSaving || pendingItemCameraUri != null || itemCameraPermissionPending) return
+        if (itemPhotoCount() >= 5) {
+            toast("사진은 최대 5장까지 등록할 수 있습니다.")
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            itemCameraPermissionPending = true
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), itemCameraPermissionRequest)
+            return
+        }
+        runCatching {
+            val directory = File(cacheDir, "item_photos").apply { mkdirs() }
+            val photo = File.createTempFile("item_", ".jpg", directory)
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", photo)
+            pendingItemCameraUri = uri
+            startActivityForResult(Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                clipData = ClipData.newRawUri("물품 사진", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }, itemCameraRequest)
+        }.onFailure {
+            pendingItemCameraUri?.let { uri -> runCatching { contentResolver.delete(uri, null, null) } }
+            pendingItemCameraUri = null
+            toast("카메라를 열 수 없습니다. 사진 선택으로 추가해주세요.")
+        }
+    }
+
     private fun openItemPhotoPicker() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "image/*"
@@ -3390,23 +3686,8 @@ class MainActivity : Activity() {
         }, itemPhotoRequest)
     }
 
-    private fun compressedItemPhoto(uri: Uri): Pair<ByteArray, String> {
-        val source = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalArgumentException("사진을 읽을 수 없습니다.")
-        require(source.size <= 20 * 1024 * 1024) { "원본 사진은 20MB 이하여야 합니다." }
-        val bitmap = BitmapFactory.decodeByteArray(source, 0, source.size)
-            ?: throw IllegalArgumentException("지원하지 않는 이미지입니다.")
-        val maxSide = 1920
-        val ratio = minOf(1f, maxSide.toFloat() / maxOf(bitmap.width, bitmap.height))
-        val resized = if (ratio < 1f) {
-            Bitmap.createScaledBitmap(bitmap, (bitmap.width * ratio).roundToInt(), (bitmap.height * ratio).roundToInt(), true)
-        } else bitmap
-        val output = ByteArrayOutputStream()
-        resized.compress(Bitmap.CompressFormat.JPEG, 85, output)
-        if (resized !== bitmap) resized.recycle()
-        bitmap.recycle()
-        return output.toByteArray() to "image/jpeg"
-    }
+    private fun compressedItemPhoto(uri: Uri): Pair<ByteArray, String> =
+        ConditionPhotoEncoder.encode(contentResolver, uri) to "image/jpeg"
 
     private fun startQrScan(contract: Contract, action: String) {
         if (contract.remoteId == null || sessionToken == null || !server.isConfigured) {
@@ -3611,6 +3892,8 @@ class MainActivity : Activity() {
             status = status,
             remoteId = remote.id,
             beforePhotos = remote.beforePhotos,
+            beforePhotoPaths = remote.beforePhotoPaths,
+            afterPhotoPaths = remote.afterPhotoPaths,
             afterPhotos = remote.afterPhotos,
             refunded = paymentStates[remote.reservationId]?.refunded == true,
             refundHeld = remote.status == "disputed",
@@ -4372,7 +4655,9 @@ class MainActivity : Activity() {
         render()
     }
 
-    private fun createReview(reservation: Reservation, comment: String) {
+    private fun createReview(reservation: Reservation, rating: Int, comment: String) {
+        if (rating !in 1..5) { toast("별을 눌러 1~5점을 선택해주세요."); return }
+        if (reviewSaving) return
         val token = sessionToken
         val item = itemById(reservation.itemId)
         val revieweeId = when (sessionUserId) {
@@ -4380,19 +4665,25 @@ class MainActivity : Activity() {
             else -> reservation.remoteBorrowerId
         }
         if (supabase.isConfigured && token != null && reservation.remoteId != null && revieweeId != null) {
+            val account = sessionUserId
+            reviewSaving = true
             toast("후기를 서버에 저장 중입니다.")
             Thread {
                 val result = runCatching {
                     supabase.createReview(
                         reservation.remoteId,
                         revieweeId,
-                        5,
-                        comment.ifBlank { "안전하고 만족스러운 거래였습니다." },
+                        rating,
+                        comment.ifBlank { "${rating}점으로 평가했습니다." },
                         token
                     )
                 }
                 runOnUiThread {
+                    reviewSaving = false
+                    if (sessionUserId != account) return@runOnUiThread
                     result.onSuccess {
+                        reviewRatings.remove(reservation.id)
+                        reviewComments.remove(reservation.id)
                         screen = Screen.PROFILE
                         loadCurrentProfile()
                         toast("후기가 등록되었습니다.")
@@ -4402,6 +4693,7 @@ class MainActivity : Activity() {
             }.start()
             return
         }
+        if (supabase.isConfigured) { toast("로그인과 거래 정보를 확인한 뒤 다시 시도해주세요."); return }
         currentUser().trust += 8
         screen = Screen.PROFILE
         toast("후기가 등록되고 신뢰 지수가 반영되었습니다.")
@@ -4454,7 +4746,16 @@ class MainActivity : Activity() {
 
     private fun clearAccountViews() {
         pendingRefreshLoads.clear()
+        chatHandler.removeCallbacks(rentalPoll)
+        inspectionChecks.clear()
+        rentalStep = RentalStep.HANDOVER_PHOTOS
         if (::swipeRefresh.isInitialized) swipeRefresh.isRefreshing = false
+        pendingItemCameraUri?.let { uri -> runCatching { contentResolver.delete(uri, null, null) } }
+        pendingItemCameraUri = null
+        itemCameraPermissionPending = false
+
+        reviewRatings.clear(); reviewComments.clear()
+        clearPendingConditionPhoto()
         if (::supabase.isInitialized && supabase.isConfigured) items.clear()
         reservations.clear(); contracts.clear(); chatMessages.clear(); notifications.clear()
         paymentStates.clear(); qrPayloads.clear(); reports.clear(); activeContractId = null
@@ -4906,17 +5207,58 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun photoSlots(filled: Int): LinearLayout = row {
-        repeat(5) { index ->
-            addView(TextView(this@MainActivity).apply {
-                text = if (index < filled) "촬영" else "+"
+    private fun conditionPhotoView(path: String, expanded: Boolean = false): FrameLayout = FrameLayout(this).apply {
+        background = rounded(Color.rgb(248, 250, 252), 8, line)
+        val label = textView("사진 불러오는 중", 11, false, muted).apply { gravity = Gravity.CENTER }
+        addView(label, FrameLayout.LayoutParams(match, match))
+        val image = ImageView(this@MainActivity).apply {
+            scaleType = if (expanded) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
+            contentDescription = "등록한 물품 상태 사진"
+        }
+        addView(image, FrameLayout.LayoutParams(match, match))
+        val account = sessionUserId
+        fun load() {
+            label.text = "사진 불러오는 중"
+            val token = sessionToken
+            if (account == null || token == null || account != sessionUserId) {
+                label.text = "로그인이 필요합니다"
+                return
+            }
+            ItemImageLoader.loadResolved(image, "condition:$account:$path", {
+                supabase.conditionPhotoUrl(path, token)
+            }) { label.text = "불러오기 실패\n눌러서 재시도" }
+        }
+        load()
+        setOnClickListener {
+            if (account != sessionUserId) return@setOnClickListener
+            if (image.drawable == null) load()
+            else if (!expanded) {
+                val preview = conditionPhotoView(path, true)
+                AlertDialog.Builder(this@MainActivity).setTitle("물품 상태 사진")
+                    .setView(preview)
+                    .setPositiveButton("닫기", null).create().apply {
+                        setOnShowListener { preview.layoutParams = preview.layoutParams.apply { height = dp(360) } }
+                        show()
+                    }
+            }
+        }
+    }
+
+    private fun photoSlots(paths: List<String>, onCapture: () -> Unit): LinearLayout = row {
+        repeat(maxOf(5, paths.size)) { index ->
+            val photo = paths.getOrNull(index)
+            val tile: View = if (photo != null) conditionPhotoView(photo) else TextView(this@MainActivity).apply {
+                text = "+"
                 gravity = Gravity.CENTER
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(if (index < filled) teal else muted)
-                background = rounded(if (index < filled) Color.rgb(231, 246, 243) else Color.rgb(248, 250, 252), 8, line)
-            }, LinearLayout.LayoutParams(0, dp(58), 1f))
-            if (index != 4) addView(space(6))
+                textSize = 20f
+                setTextColor(muted)
+                background = rounded(Color.rgb(248, 250, 252), 8, line)
+                contentDescription = "상태 사진 ${index + 1} 촬영"
+                isFocusable = true
+                setOnClickListener { onCapture() }
+            }
+            addView(tile, LinearLayout.LayoutParams(0, dp(72), 1f))
+            if (index != maxOf(5, paths.size) - 1) addView(space(6))
         }
     }
 
