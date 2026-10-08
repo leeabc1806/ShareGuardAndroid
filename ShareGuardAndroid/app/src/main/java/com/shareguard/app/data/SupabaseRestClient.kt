@@ -734,6 +734,7 @@ class SupabaseRestClient(
         content: String,
         accessToken: String
     ) {
+        require(rating in 1..5) { "별점은 1~5점으로 선택해주세요." }
         val response = request(
             "/rest/v1/reviews",
             "POST",
