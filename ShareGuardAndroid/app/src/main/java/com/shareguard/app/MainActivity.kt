@@ -198,6 +198,8 @@ class MainActivity : Activity() {
         var status: ContractStatus,
         var beforePhotos: Int = 0,
         var afterPhotos: Int = 0,
+        var beforePhotoPaths: List<String> = emptyList(),
+        var afterPhotoPaths: List<String> = emptyList(),
         var refunded: Boolean = false,
         var refundHeld: Boolean = false,
         val remoteId: String? = null,
@@ -2266,7 +2268,8 @@ class MainActivity : Activity() {
             addView(textView(if (isReturn) "반납 직후 같은 각도로 촬영하면 분쟁을 예방할 수 있어요." else "물품 전체와 흠집, 구성품을 최대 5장으로 남겨주세요.", 12, false, muted).withTop(4))
             val count = if (isReturn) contract.afterPhotos else contract.beforePhotos
             val phase = if (isReturn) "after" else "before"
-            addView(photoSlots(count) { openPhotoPicker(contract, phase) }.withTop(12))
+            val paths = if (isReturn) contract.afterPhotoPaths else contract.beforePhotoPaths
+            addView(photoSlots(paths) { openPhotoPicker(contract, phase) }.withTop(12))
             addView(button(if (conditionPhotoUploading) "사진 업로드 중…" else "카메라로 상태 사진 촬영  $count/5") {
                 openPhotoPicker(contract, phase)
             }.withTop(10))
@@ -3299,20 +3302,24 @@ class MainActivity : Activity() {
                 val auth = SessionTokens.refresh(this, supabase)
                 check(auth.userId == account) { "로그인 계정이 변경되었습니다." }
                 val bytes = ConditionPhotoEncoder.encode(contentResolver, uri)
-                supabase.uploadConditionPhoto(contractId, phase, account, bytes, "image/jpeg", auth.accessToken!!)
-                auth.accessToken
+                val path = supabase.uploadConditionPhoto(contractId, phase, account, bytes, "image/jpeg", auth.accessToken!!)
+                auth.accessToken to path
             }
             runOnUiThread {
                 conditionPhotoUploading = false
                 if (sessionUserId != account) return@runOnUiThread
-                result.onSuccess { token ->
+                result.onSuccess { (token, path) ->
                     sessionToken = token
                     contracts.find { it.remoteId == contractId }?.let { contract ->
                         activeContractId = contract.id
                         if (phase == "before") {
+                            contract.beforePhotoPaths = contract.beforePhotoPaths + path
                             contract.beforePhotos++
                             if (contract.status == ContractStatus.SIGNED) contract.status = ContractStatus.READY
-                        } else contract.afterPhotos++
+                        } else {
+                            contract.afterPhotoPaths = contract.afterPhotoPaths + path
+                            contract.afterPhotos++
+                        }
                         Unit
                     }
                     clearPendingConditionPhoto()
@@ -3575,6 +3582,8 @@ class MainActivity : Activity() {
             status = status,
             remoteId = remote.id,
             beforePhotos = remote.beforePhotos,
+            beforePhotoPaths = remote.beforePhotoPaths,
+            afterPhotoPaths = remote.afterPhotoPaths,
             afterPhotos = remote.afterPhotos,
             refunded = paymentStates[remote.reservationId]?.refunded == true,
             refundHeld = remote.status == "disputed",
@@ -4886,22 +4895,58 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun photoSlots(filled: Int, onCapture: () -> Unit): LinearLayout = row {
-        repeat(5) { index ->
-            addView(TextView(this@MainActivity).apply {
-                text = if (index < filled) "촬영" else "+"
+    private fun conditionPhotoView(path: String, expanded: Boolean = false): FrameLayout = FrameLayout(this).apply {
+        background = rounded(Color.rgb(248, 250, 252), 8, line)
+        val label = textView("사진 불러오는 중", 11, false, muted).apply { gravity = Gravity.CENTER }
+        addView(label, FrameLayout.LayoutParams(match, match))
+        val image = ImageView(this@MainActivity).apply {
+            scaleType = if (expanded) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
+            contentDescription = "등록한 물품 상태 사진"
+        }
+        addView(image, FrameLayout.LayoutParams(match, match))
+        val account = sessionUserId
+        fun load() {
+            label.text = "사진 불러오는 중"
+            val token = sessionToken
+            if (account == null || token == null || account != sessionUserId) {
+                label.text = "로그인이 필요합니다"
+                return
+            }
+            ItemImageLoader.loadResolved(image, "condition:$account:$path", {
+                supabase.conditionPhotoUrl(path, token)
+            }) { label.text = "불러오기 실패\n눌러서 재시도" }
+        }
+        load()
+        setOnClickListener {
+            if (account != sessionUserId) return@setOnClickListener
+            if (image.drawable == null) load()
+            else if (!expanded) {
+                val preview = conditionPhotoView(path, true)
+                AlertDialog.Builder(this@MainActivity).setTitle("물품 상태 사진")
+                    .setView(preview)
+                    .setPositiveButton("닫기", null).create().apply {
+                        setOnShowListener { preview.layoutParams = preview.layoutParams.apply { height = dp(360) } }
+                        show()
+                    }
+            }
+        }
+    }
+
+    private fun photoSlots(paths: List<String>, onCapture: () -> Unit): LinearLayout = row {
+        repeat(maxOf(5, paths.size)) { index ->
+            val photo = paths.getOrNull(index)
+            val tile: View = if (photo != null) conditionPhotoView(photo) else TextView(this@MainActivity).apply {
+                text = "+"
                 gravity = Gravity.CENTER
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(if (index < filled) teal else muted)
-                background = rounded(if (index < filled) Color.rgb(231, 246, 243) else Color.rgb(248, 250, 252), 8, line)
-                if (index >= filled) {
-                    contentDescription = "상태 사진 ${index + 1} 촬영"
-                    isFocusable = true
-                    setOnClickListener { onCapture() }
-                }
-            }, LinearLayout.LayoutParams(0, dp(58), 1f))
-            if (index != 4) addView(space(6))
+                textSize = 20f
+                setTextColor(muted)
+                background = rounded(Color.rgb(248, 250, 252), 8, line)
+                contentDescription = "상태 사진 ${index + 1} 촬영"
+                isFocusable = true
+                setOnClickListener { onCapture() }
+            }
+            addView(tile, LinearLayout.LayoutParams(0, dp(72), 1f))
+            if (index != maxOf(5, paths.size) - 1) addView(space(6))
         }
     }
 

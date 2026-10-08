@@ -19,11 +19,16 @@ object ItemImageLoader {
     }
 
     fun load(view: ImageView, url: String, failed: () -> Unit) {
+        loadResolved(view, url, { url }, failed)
+    }
+
+    fun loadResolved(view: ImageView, key: String, resolveUrl: () -> String, failed: () -> Unit) {
+        val url = key
         view.tag = url
         cache.get(url)?.let { view.setImageBitmap(it); return }
         executor.execute {
             val bitmap = runCatching {
-                val connection = URL(url).openConnection() as HttpURLConnection
+                val connection = URL(resolveUrl()).openConnection() as HttpURLConnection
                 try {
                     connection.connectTimeout = 10_000
                     connection.readTimeout = 15_000

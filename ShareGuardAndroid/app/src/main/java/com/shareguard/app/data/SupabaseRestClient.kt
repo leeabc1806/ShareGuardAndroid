@@ -75,6 +75,8 @@ data class RemoteContract(
     val borrowerSigned: Boolean,
     val beforePhotos: Int = 0,
     val afterPhotos: Int = 0,
+    val beforePhotoPaths: List<String> = emptyList(),
+    val afterPhotoPaths: List<String> = emptyList(),
     val ownerSignedAt: String? = null,
     val borrowerSignedAt: String? = null,
     val specialTerms: String? = null,
@@ -463,16 +465,18 @@ class SupabaseRestClient(
         )
         if (!response.isSuccessful) throw IllegalStateException(response.errorMessage())
         val photoResponse = request(
-            "/rest/v1/condition_photos?select=contract_id,phase",
+            "/rest/v1/condition_photos?select=contract_id,phase,storage_path&order=created_at.asc",
             "GET",
             accessToken = accessToken
         )
         if (!photoResponse.isSuccessful) throw IllegalStateException(photoResponse.errorMessage())
         val photos = JSONArray(photoResponse.body)
         val counts = mutableMapOf<String, Pair<Int, Int>>()
+        val paths = mutableMapOf<Pair<String, String>, MutableList<String>>()
         (0 until photos.length()).forEach { index ->
             val photo = photos.getJSONObject(index)
             val contractId = photo.getString("contract_id")
+            paths.getOrPut(contractId to photo.getString("phase")) { mutableListOf() }.add(photo.getString("storage_path"))
             val current = counts[contractId] ?: (0 to 0)
             counts[contractId] = if (photo.getString("phase") == "before") {
                 current.copy(first = current.first + 1)
@@ -492,12 +496,24 @@ class SupabaseRestClient(
                 borrowerSigned = !row.isNull("borrower_signed_at"),
                 beforePhotos = photoCount.first,
                 afterPhotos = photoCount.second,
+                beforePhotoPaths = paths[row.getString("id") to "before"].orEmpty(),
+                afterPhotoPaths = paths[row.getString("id") to "after"].orEmpty(),
                 ownerSignedAt = row.optNullableString("owner_signed_at"),
                 borrowerSignedAt = row.optNullableString("borrower_signed_at"),
                 specialTerms = row.optNullableString("special_terms"),
                 snapshot = row.optJSONObject("contract_snapshot") ?: JSONObject()
             )
         }
+    }
+
+    fun conditionPhotoUrl(path: String, accessToken: String): String {
+        val encoded = path.split('/').joinToString("/") { Uri.encode(it) }
+        val response = request("/storage/v1/object/sign/condition-photos/$encoded", "POST",
+            JSONObject().put("expiresIn", 300), accessToken)
+        check(response.isSuccessful) { response.errorMessage() }
+        val signed = JSONObject(response.body).getString("signedURL")
+        require(signed.startsWith("/object/sign/condition-photos/")) { "Invalid photo URL" }
+        return baseUrl.trimEnd('/') + "/storage/v1" + signed
     }
 
     fun createReservation(
