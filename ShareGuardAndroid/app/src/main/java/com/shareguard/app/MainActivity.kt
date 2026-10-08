@@ -125,7 +125,7 @@ class MainActivity : Activity() {
         RESERVATIONS("예약 및 거래 관리", "예약 승인부터 결제, 계약, QR 인증, 환급까지 진행합니다."),
         TRANSACTION("안전 결제 및 계약", "대여료와 보증금을 확인하고 전자 계약에 서명합니다."),
         CHAT("실시간 채팅", "대여 조건, 장소, 시간을 거래 당사자끼리 조율합니다."),
-        QR("QR 거래 인증", "상태 사진 기록 후 QR로 대여 시작과 반납 완료를 인증합니다."),
+        RENTAL_FLOW("대여 진행", "물품 인도부터 반납까지 단계별로 확인합니다."),
         FEEDBACK("후기 및 문제 신고", "거래 후기를 남기거나 문제가 있는 거래를 신고합니다."),
         NOTIFICATIONS("알림", "예약, 결제, 채팅, 반납 상태를 한곳에서 확인합니다."),
         PROFILE("프로필 및 신뢰 지수", "거래 이력, 평점, 본인 인증, 무사고 기록을 확인합니다."),
@@ -226,7 +226,8 @@ class MainActivity : Activity() {
         val target: Screen,
         var unread: Boolean = true,
         val remoteId: Long? = null,
-        val reservationId: String? = null
+        val reservationId: String? = null,
+        val contractId: Int? = null
     )
 
     private val blue = Color.rgb(37, 99, 235)
@@ -331,7 +332,8 @@ class MainActivity : Activity() {
     private var chatDetailOpen = false
     private var reservationTab = "빌린 물품"
     private var activeContractId: Int? = null
-    private var qrPhase = "대여 시작"
+    private var rentalStep = RentalStep.HANDOVER_PHOTOS
+    private val inspectionChecks = mutableMapOf<Int, Pair<Boolean, Boolean>>()
     private var notificationFilter = "전체"
     private var adminTab = "신고 관리"
     private var selectedAdminReportId: Int? = null
@@ -359,6 +361,15 @@ class MainActivity : Activity() {
                 loadRemoteChat()
                 chatHandler.postDelayed(this, 5_000L)
             }
+        }
+    }
+    private val rentalPoll = object : Runnable {
+        override fun run() {
+            if (!activityVisible || screen != Screen.RENTAL_FLOW ||
+                rentalStep !in setOf(RentalStep.HANDOVER_QR, RentalStep.RETURN_QR) ||
+                activeContract()?.remoteId == null) return
+            loadRemoteReservations(refreshPayments = false)
+            chatHandler.postDelayed(this, 4_000L)
         }
     }
 
@@ -392,7 +403,7 @@ class MainActivity : Activity() {
         AppNotification(1, "✓", "예약이 승인되었어요", "소니 A7III 예약이 승인되었습니다. 안전 결제를 진행해주세요.", "방금", Screen.RESERVATIONS),
         AppNotification(2, "💬", "새 메시지가 도착했어요", "김민수님: 네, 내일 오전 10시 가능합니다!", "2분 전", Screen.CHAT),
         AppNotification(3, "🔒", "보증금 환급 완료", "정상 반납이 확인되어 보증금 200,000원이 환급되었습니다.", "어제", Screen.RESERVATIONS, false),
-        AppNotification(4, "📷", "대여 전 사진을 등록해주세요", "거래 시작 전 물품 상태 사진이 필요합니다.", "2일 전", Screen.QR, false)
+        AppNotification(4, "📷", "대여 전 사진을 등록해주세요", "거래 시작 전 물품 상태 사진이 필요합니다.", "2일 전", Screen.RENTAL_FLOW, false)
     )
     private val chatMessages = mutableListOf(
         ChatMessage(false, "가능합니다. 5월 1일부터 3일까지 비워둘게요."),
@@ -459,6 +470,7 @@ class MainActivity : Activity() {
         chatHandler.removeCallbacks(notificationPoll)
         chatHandler.post(notificationPoll)
         if (screen == Screen.CHAT && chatDetailOpen) { chatHandler.removeCallbacks(chatPoll); chatHandler.post(chatPoll) }
+        scheduleRentalPoll()
         if (::supabase.isInitialized && ::root.isInitialized && !sessionToken.isNullOrBlank()) {
             loadCurrentProfile()
             if (profileLoaded) loadRemoteReservations()
@@ -470,6 +482,7 @@ class MainActivity : Activity() {
         activityVisible = false
         chatHandler.removeCallbacks(notificationPoll)
         chatHandler.removeCallbacks(chatPoll)
+        chatHandler.removeCallbacks(rentalPoll)
         getSharedPreferences(SESSION_PREFS, MODE_PRIVATE)
             .edit()
             .putLong(KEY_LAST_ACTIVE_AT, System.currentTimeMillis())
@@ -608,7 +621,11 @@ class MainActivity : Activity() {
             render()
             return
         }
-        if (screen in setOf(Screen.TRANSACTION, Screen.QR, Screen.FEEDBACK, Screen.NOTIFICATIONS, Screen.ADMIN)) {
+        if (screen == Screen.RENTAL_FLOW) {
+            backRentalFlow()
+            return
+        }
+        if (screen in setOf(Screen.TRANSACTION, Screen.FEEDBACK, Screen.NOTIFICATIONS, Screen.ADMIN)) {
             screen = when (screen) {
                 Screen.NOTIFICATIONS -> Screen.HOME
                 Screen.ADMIN -> Screen.PROFILE
@@ -677,6 +694,7 @@ class MainActivity : Activity() {
 
     private fun render() {
         chatHandler.removeCallbacks(chatPoll)
+        chatHandler.removeCallbacks(rentalPoll)
         if (screen == Screen.CHAT && chatDetailOpen) {
             selectedChatReservationId?.let { id -> chatInput?.let { chatDrafts[id] = it.text.toString() } }
         }
@@ -722,13 +740,14 @@ class MainActivity : Activity() {
             Screen.RESERVATIONS -> renderReservations()
             Screen.TRANSACTION -> renderTransaction()
             Screen.CHAT -> renderChat()
-            Screen.QR -> renderQr()
+            Screen.RENTAL_FLOW -> renderRentalFlow()
             Screen.FEEDBACK -> renderFeedback()
             Screen.NOTIFICATIONS -> renderNotifications()
             Screen.PROFILE -> renderProfile()
             Screen.ADMIN -> renderAdmin()
         }
         renderBottomNav()
+        scheduleRentalPoll()
     }
 
     private fun refreshCurrentTab() {
@@ -772,16 +791,19 @@ class MainActivity : Activity() {
 
     private fun renderHeader() {
         content.addView(row {
-            if (screen in setOf(Screen.TRANSACTION, Screen.QR, Screen.FEEDBACK, Screen.NOTIFICATIONS, Screen.ADMIN)) {
+            if (screen in setOf(Screen.TRANSACTION, Screen.RENTAL_FLOW, Screen.FEEDBACK, Screen.NOTIFICATIONS, Screen.ADMIN)) {
                 addView(coloredButton("‹", Color.rgb(245, 247, 251), text) {
-                    screen = if (screen == Screen.NOTIFICATIONS) Screen.HOME else if (screen == Screen.ADMIN) Screen.PROFILE else Screen.RESERVATIONS
-                    render()
+                    if (screen == Screen.RENTAL_FLOW) backRentalFlow()
+                    else {
+                        screen = if (screen == Screen.NOTIFICATIONS) Screen.HOME else if (screen == Screen.ADMIN) Screen.PROFILE else Screen.RESERVATIONS
+                        render()
+                    }
                 }, LinearLayout.LayoutParams(dp(46), dp(46)))
                 addView(space(10))
             }
             addView(column {
-                addView(textView(screen.title, 23, true, text))
-                addView(textView(screen.subtitle, 12, false, muted).withTop(2))
+                addView(textView(if (screen == Screen.RENTAL_FLOW) rentalStepTitle() else screen.title, 23, true, text))
+                addView(textView(if (screen == Screen.RENTAL_FLOW) rentalStepSubtitle() else screen.subtitle, 12, false, muted).withTop(2))
             }, LinearLayout.LayoutParams(0, wrap, 1f))
             if (screen == Screen.PROFILE) addView(coloredButton("⚙", Color.rgb(245, 247, 251), text) {
                 showSettings()
@@ -1723,15 +1745,16 @@ class MainActivity : Activity() {
                         screen = Screen.TRANSACTION
                         render()
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
-                    contract.status == ContractStatus.SIGNED || contract.status == ContractStatus.READY || contract.status == ContractStatus.RENTING -> addView(button("QR 인증으로 이동") {
-                        activeContractId = contract.id
-                        screen = Screen.QR
-                        render()
+                    contract.status in setOf(ContractStatus.SIGNED, ContractStatus.READY) -> addView(button("대여 시작하기") {
+                        openRentalFlow(contract)
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
-                    contract.status == ContractStatus.COMPLETED -> addView(button("후기 작성") {
-                        activeContractId = contract.id
-                        screen = Screen.FEEDBACK
-                        render()
+                    contract.status == ContractStatus.RENTING -> {
+                        addView(button("대여 중 보기") { openRentalFlow(contract) }, LinearLayout.LayoutParams(0, dp(40), 1f))
+                        addView(space(8))
+                        addView(button("반납 진행", secondary = true) { openRentalFlow(contract, RentalStep.RETURN_INSPECT) }, LinearLayout.LayoutParams(0, dp(40), 1f))
+                    }
+                    contract.status == ContractStatus.COMPLETED -> addView(button("반납 완료 보기") {
+                        openRentalFlow(contract)
                     }, LinearLayout.LayoutParams(0, dp(40), 1f))
                     contract.status == ContractStatus.DISPUTED -> addView(button("분쟁 상태 확인", secondary = true) {
                         activeContractId = contract.id
@@ -1800,11 +1823,7 @@ class MainActivity : Activity() {
                 content.addView(card().apply {
                     addView(textView("기존 서명 계약", 15, true, text))
                     addView(textView("이 계약의 서명 당시 조항은 현재 조항 ${ContractTerms.TERMS_VERSION}과 다를 수 있습니다. 새 조항을 소급 적용하거나 새 계약서 PDF로 표시하지 않습니다.", 13, false, muted).withTop(8))
-                    if (signed) addView(button("상태 사진 기록으로 이동") {
-                        activeContractId = contract.id
-                        screen = Screen.QR
-                        render()
-                    }.withTop(12))
+                    if (signed) addView(button("대여 시작하기") { openRentalFlow(contract) }.withTop(12))
                 }.withTop(10))
                 return
             }
@@ -1866,11 +1885,7 @@ class MainActivity : Activity() {
                     addView(button("계약서 PDF 공유", secondary = true) { generateContractPdf(contract, share = true) }.withTop(8))
                 }
                 if (signed) {
-                    addView(button("상태 사진 기록으로 이동") {
-                        activeContractId = contract.id
-                        screen = Screen.QR
-                        render()
-                    }.withTop(12))
+                    addView(button("대여 시작하기") { openRentalFlow(contract) }.withTop(12))
                 }
             }.withTop(10))
         }
@@ -2143,59 +2158,305 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun renderQr() {
-        val contract = activeContract()
-        if (contract == null) {
-            content.addView(empty("진행 중인 계약이 없습니다. 예약 승인 후 QR 인증을 사용할 수 있습니다."))
+    private fun stepFor(contract: Contract): RentalStep? = RentalFlowRules.stepFor(contract.status.name, contract.beforePhotos)
+
+    private fun isRentalOwner(contract: Contract): Boolean {
+        val reservation = reservations.find { it.id == contract.reservationId } ?: return false
+        val item = itemById(reservation.itemId)
+        return if (item.remoteId != null) item.remoteOwnerId == sessionUserId else item.ownerId == currentUser().id
+    }
+
+    private fun inspectionComplete(contract: Contract): Boolean =
+        inspectionChecks[contract.id]?.let { it.first && it.second } == true
+
+    private fun canEnterRentalStep(contract: Contract, step: RentalStep): Boolean = RentalFlowRules.canEnter(
+        step, contract.status.name, contract.beforePhotos, contract.afterPhotos,
+        isRentalOwner(contract), inspectionComplete(contract)
+    )
+
+    private fun openRentalFlow(contract: Contract, requested: RentalStep? = null) {
+        activeContractId = contract.id
+        if (contract.status == ContractStatus.DISPUTED) {
+            screen = Screen.FEEDBACK
+        } else {
+            val entry = stepFor(contract) ?: run {
+                screen = Screen.TRANSACTION
+                toast("계약과 결제를 먼저 완료하세요.")
+                render()
+                return
+            }
+            rentalStep = requested?.takeIf { canEnterRentalStep(contract, it) } ?: entry
+            screen = Screen.RENTAL_FLOW
+        }
+        render()
+    }
+
+    private fun moveRentalStep(contract: Contract, next: RentalStep) {
+        if (!canEnterRentalStep(contract, next)) {
+            toast("사진 기록과 거래 상태를 먼저 확인해주세요.")
             return
         }
-        if (contract.status == ContractStatus.RENTING) qrPhase = "반납 완료"
-        val isReturn = qrPhase == "반납 완료"
-        content.addView(transactionProgress(if (contract.status == ContractStatus.COMPLETED) 4 else if (contract.status == ContractStatus.RENTING) 3 else 2).withTop(16))
-        content.addView(segmentedTabs(listOf("대여 시작", "반납 완료"), qrPhase) { phase ->
-            qrPhase = phase
+        rentalStep = next
+        render()
+    }
+
+    private fun backRentalFlow() {
+        val contract = activeContract()
+        val previous = RentalFlowRules.backFrom(rentalStep)
+        if (contract != null && previous != null && canEnterRentalStep(contract, previous)) rentalStep = previous
+        else screen = Screen.RESERVATIONS
+        render()
+    }
+
+    private fun scheduleRentalPoll() {
+        chatHandler.removeCallbacks(rentalPoll)
+        if (activityVisible && screen == Screen.RENTAL_FLOW &&
+            rentalStep in setOf(RentalStep.HANDOVER_QR, RentalStep.RETURN_QR) && activeContract()?.remoteId != null) {
+            chatHandler.postDelayed(rentalPoll, 4_000L)
+        }
+    }
+
+    private fun rentalStepTitle(): String {
+        val owner = activeContract()?.let(::isRentalOwner) == true
+        return when (rentalStep) {
+            RentalStep.HANDOVER_PHOTOS -> if (owner) "물품 인도 전 상태 기록" else "물품 수령 전 상태 확인"
+            RentalStep.HANDOVER_QR -> if (owner) "물품 인도 QR 인증" else "물품 수령 QR 인증"
+            RentalStep.STARTED -> "대여가 시작되었습니다"
+            RentalStep.RENTING -> "대여 중"
+            RentalStep.RETURN_INSPECT -> if (owner) "반납 물품 검수" else "반납 전 상태 기록"
+            RentalStep.RETURN_QR -> if (owner) "반납 확인 QR 인증" else "반납 QR 인증"
+            RentalStep.RETURNED -> "반납이 완료되었습니다"
+        }
+    }
+
+    private fun rentalStepSubtitle(): String = when (rentalStep) {
+        RentalStep.HANDOVER_PHOTOS -> "물품 상태를 사진으로 남깁니다."
+        RentalStep.HANDOVER_QR -> "상대방과 QR로 물품 인도를 확인합니다."
+        RentalStep.STARTED -> "대여 시작이 확인되었습니다."
+        RentalStep.RENTING -> "반납 예정일과 결제 상태를 확인합니다."
+        RentalStep.RETURN_INSPECT -> "반납 상태를 기록하고 확인합니다."
+        RentalStep.RETURN_QR -> "상대방과 QR로 반납을 확인합니다."
+        RentalStep.RETURNED -> "반납 완료와 보증금 환급은 별도 단계입니다."
+    }
+
+    private fun rentalProgress(): LinearLayout = row {
+        val current = RentalFlowRules.progressIndex(rentalStep)
+        listOf("인도", "대여 중", "반납", "완료").forEachIndexed { index, label ->
+            addView(textView("${if (index <= current) "●" else "○"}\n$label", 11, true, if (index <= current) blue else muted).apply {
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(0, wrap, 1f))
+        }
+    }
+
+    private fun renderRentalFlow() {
+        val contract = activeContract()
+        if (contract == null) {
+            content.addView(empty("진행 중인 계약이 없습니다.").withTop(16))
+            return
+        }
+        if (contract.status == ContractStatus.DISPUTED) {
+            screen = Screen.FEEDBACK
             render()
-        }.withTop(14))
+            return
+        }
+        if (!canEnterRentalStep(contract, rentalStep)) {
+            rentalStep = stepFor(contract) ?: run {
+                content.addView(empty("계약과 결제를 먼저 완료하세요.").withTop(16))
+                return
+            }
+        }
+        content.addView(rentalProgress().withTop(16))
+        when (rentalStep) {
+            RentalStep.HANDOVER_PHOTOS -> renderHandoverPhotos(contract)
+            RentalStep.HANDOVER_QR -> renderHandoverQr(contract)
+            RentalStep.STARTED -> renderRentalStarted(contract)
+            RentalStep.RENTING -> renderRenting(contract)
+            RentalStep.RETURN_INSPECT -> renderReturnInspect(contract)
+            RentalStep.RETURN_QR -> renderReturnQr(contract)
+            RentalStep.RETURNED -> renderReturned(contract)
+        }
+    }
+
+    private fun renderConditionPhotos(contract: Contract, after: Boolean) {
+        val count = if (after) contract.afterPhotos else contract.beforePhotos
         content.addView(card(Color.rgb(248, 248, 255)).apply {
-            addView(textView(if (isReturn) "2. 반납 후 상태를 기록해요" else "1. 대여 전 상태를 기록해요", 19, true, text))
-            addView(textView(if (isReturn) "반납 직후 같은 각도로 촬영하면 분쟁을 예방할 수 있어요." else "물품 전체와 흠집, 구성품을 최대 5장으로 남겨주세요.", 12, false, muted).withTop(4))
-            val count = if (isReturn) contract.afterPhotos else contract.beforePhotos
+            addView(textView(if (after) "반납 후 상태 사진" else "대여 전 상태 사진", 19, true, text))
+            addView(textView(if (after) "반납 직후 같은 각도로 촬영하면 분쟁을 예방할 수 있어요." else "물품 전체와 흠집, 구성품을 최대 5장으로 남겨주세요.", 12, false, muted).withTop(4))
             addView(photoSlots(count).withTop(12))
             addView(button(if (count == 0) "+ 상태 사진 촬영/선택" else "사진 추가  $count/5", secondary = true) {
-                val phase = if (isReturn) "after" else "before"
-                if (contract.remoteId != null && sessionToken != null) {
-                    openPhotoPicker(contract, phase)
-                } else if (!isReturn && contract.status == ContractStatus.SIGNED) {
+                if (contract.remoteId != null && sessionToken != null) openPhotoPicker(contract, if (after) "after" else "before")
+                else if (!after && contract.status in setOf(ContractStatus.SIGNED, ContractStatus.READY)) {
                     contract.beforePhotos = 5
                     contract.status = ContractStatus.READY
                     render()
-                } else if (isReturn && contract.status == ContractStatus.RENTING) {
+                } else if (after && contract.status == ContractStatus.RENTING) {
                     contract.afterPhotos = 5
                     render()
-                } else toast(if (isReturn) "대여 시작 인증 후 반납 사진을 등록할 수 있습니다." else "전자 계약 서명 후 등록할 수 있습니다.")
-            }.withTop(10))
+                } else toast("거래 상태를 확인한 뒤 사진을 등록하세요.")
+            }.apply { isEnabled = count < 5 }.withTop(10))
         }.withTop(12))
+    }
+
+    private fun renderHandoverPhotos(contract: Contract) {
+        renderConditionPhotos(contract, after = false)
+        content.addView(button("다음 · QR 인증") { moveRentalStep(contract, RentalStep.HANDOVER_QR) }
+            .apply { isEnabled = contract.beforePhotos > 0 }.withTop(12))
+    }
+
+    private fun renderQrStage(contract: Contract, action: String) {
+        val isReturn = action == "end"
         content.addView(card().apply {
-            addView(textView(if (isReturn) "2. QR로 반납을 확인해요" else "2. QR로 물품 수령을 확인해요", 19, true, text))
+            addView(textView(if (isReturn) "QR로 반납을 확인해요" else "QR로 물품 인도를 확인해요", 19, true, text))
             addView(textView("상대방 화면의 QR을 스캔하거나 내 QR을 보여주세요.", 12, false, muted).withTop(4))
-            val action = if (isReturn) "end" else "start"
-            val issued = qrPayloads["${contract.remoteId}:$action"]?.takeIf { it.expiresAt.isAfter(Instant.now()) }
-            if (issued != null) {
-                val bitmap = BarcodeEncoder().encodeBitmap(issued.payload, BarcodeFormat.QR_CODE, dp(240), dp(240))
-                addView(ImageView(this@MainActivity).apply {
-                    setImageBitmap(bitmap)
-                    contentDescription = "상대방이 스캔할 거래 인증 QR"
-                }, LinearLayout.LayoutParams(match, dp(260)).apply { topMargin = dp(12) })
-                addView(textView("상대방만 인증 가능 · 한 번만 사용 가능", 12, true, muted).withTop(8))
-            } else addView(textView("사진 등록을 마친 뒤 인증 QR을 만들어주세요.", 13, false, muted).withTop(12))
-            addView(button(if (qrRequestInProgress) "처리 중" else "새 QR 만들기", secondary = true) {
-                issueServerQr(contract, action)
-            }.withTop(12))
-            addView(button(if (isReturn) "반납 QR 스캔" else "대여 시작 QR 스캔", goodStyle = isReturn) {
-                startQrScan(contract, action)
-            }.withTop(12))
+            if (contract.remoteId == null) {
+                addView(button("QR 인증 시연") {
+                    contract.status = if (isReturn) ContractStatus.COMPLETED else ContractStatus.RENTING
+                    rentalStep = if (isReturn) RentalStep.RETURNED else RentalStep.STARTED
+                    render()
+                }.withTop(12))
+            } else {
+                val issued = qrPayloads["${contract.remoteId}:$action"]?.takeIf { it.expiresAt.isAfter(Instant.now()) }
+                if (issued != null) {
+                    val bitmap = BarcodeEncoder().encodeBitmap(issued.payload, BarcodeFormat.QR_CODE, dp(240), dp(240))
+                    addView(ImageView(this@MainActivity).apply {
+                        setImageBitmap(bitmap)
+                        contentDescription = "상대방이 스캔할 거래 인증 QR"
+                    }, LinearLayout.LayoutParams(match, dp(260)).apply { topMargin = dp(12) })
+                    addView(textView("상대방만 인증 가능 · 한 번만 사용 가능", 12, true, muted).withTop(8))
+                } else addView(textView("인증 QR을 만들어 상대방에게 보여주세요.", 13, false, muted).withTop(12))
+                addView(button(if (qrRequestInProgress) "처리 중" else "새 QR 만들기", secondary = true) {
+                    issueServerQr(contract, action)
+                }.apply { isEnabled = !qrRequestInProgress }.withTop(12))
+                addView(button(if (isReturn) "반납 QR 스캔" else "대여 시작 QR 스캔", goodStyle = isReturn) {
+                    startQrScan(contract, action)
+                }.apply { isEnabled = !qrRequestInProgress }.withTop(12))
+                addView(textView("상대방이 인증하면 화면이 자동으로 넘어갑니다 (최대 약 4초).", 12, false, muted).withTop(8))
+            }
         }.withTop(12))
+    }
+
+    private fun renderHandoverQr(contract: Contract) {
+        renderQrStage(contract, "start")
         content.addView(paymentStatusCard(contract).withTop(12))
+    }
+
+    private fun rentalDueLabel(reservation: Reservation): String {
+        val days = runCatching { ChronoUnit.DAYS.between(LocalDate.now(), LocalDate.parse(reservation.endDate)) }.getOrNull()
+        return when {
+            days == null -> reservation.endDate
+            days > 0 -> "${reservation.endDate} (D-$days)"
+            days == 0L -> "${reservation.endDate} (오늘)"
+            else -> "${reservation.endDate} (${-(days)}일 지남)"
+        }
+    }
+
+    private fun rentalSummary(contract: Contract): LinearLayout = card().apply {
+        val reservation = reservations.find { it.id == contract.reservationId } ?: return@apply
+        addView(metric("대여료", money((reservation.totalAmount - reservation.depositAmount).coerceAtLeast(0))))
+        addView(metric("대여 기간", "${reservation.startDate} ~ ${reservation.endDate}"))
+        addView(metric("반납 예정일", rentalDueLabel(reservation)))
+    }
+
+    private fun depositHeldCard(contract: Contract): LinearLayout = card(Color.rgb(239, 246, 255)).apply {
+        val reservation = reservations.find { it.id == contract.reservationId } ?: return@apply
+        val payment = paymentStates[reservation.remoteId]
+        if (payment?.status == "paid" && paymentStateError == null) {
+            addView(textView("보증금 ${money(reservation.depositAmount)} 확보 완료", 18, true, blue))
+            addView(textView("보증금은 ShareGuard가 보관하며, 반납 시 물품에 문제가 있으면 이 금액에서 보상받을 수 있습니다.", 12, false, muted).withTop(8))
+        } else {
+            addView(textView("결제 상태 확인 중", 17, true, warn))
+            addView(textView("보증금 확보 여부를 아직 확인하지 못했습니다.", 12, false, muted).withTop(6))
+            paymentStateError?.let { addView(textView(it, 12, false, warn).withTop(6)) }
+            if (reservation.remoteId != null) addView(button(if (paymentRefreshInProgress) "확인 중…" else "결제 상태 새로고침", secondary = true) {
+                if (!paymentRefreshInProgress) loadPaymentStates()
+            }.apply { isEnabled = !paymentRefreshInProgress }.withTop(8))
+        }
+        addView(metric("대여료", money((reservation.totalAmount - reservation.depositAmount).coerceAtLeast(0))).withTop(10))
+        addView(metric("대여 기간", "${reservation.startDate} ~ ${reservation.endDate}"))
+        addView(metric("반납 예정일", rentalDueLabel(reservation)))
+    }
+
+    private fun renderRentalStarted(contract: Contract) {
+        content.addView(card(Color.rgb(240, 253, 244)).apply {
+            addView(textView("✓ 대여가 시작되었습니다", 21, true, good))
+            addView(textView("QR 인증으로 물품 인도가 확인되었습니다.", 13, false, muted).withTop(8))
+        }.withTop(12))
+        content.addView(if (isRentalOwner(contract)) depositHeldCard(contract).withTop(12) else rentalSummary(contract).withTop(12))
+        content.addView(button("확인 · 대여 중 보기") { moveRentalStep(contract, RentalStep.RENTING) }.withTop(12))
+    }
+
+    private fun renderRenting(contract: Contract) {
+        content.addView(if (isRentalOwner(contract)) depositHeldCard(contract).withTop(12) else rentalSummary(contract).withTop(12))
+        content.addView(button("반납 진행") { moveRentalStep(contract, RentalStep.RETURN_INSPECT) }.withTop(12))
+        content.addView(paymentStatusCard(contract).withTop(12))
+    }
+
+    private fun renderReturnInspect(contract: Contract) {
+        renderConditionPhotos(contract, after = true)
+        val owner = isRentalOwner(contract)
+        val next = button("다음 · 반납 QR 인증") { moveRentalStep(contract, RentalStep.RETURN_QR) }
+        if (owner) {
+            val checks = inspectionChecks[contract.id] ?: (false to false)
+            content.addView(card().apply {
+                addView(textView("반납 검수 체크리스트", 17, true, text))
+                val components = CheckBox(this@MainActivity).apply {
+                    text = "구성품이 모두 반납되었습니다"
+                    isChecked = checks.first
+                    setOnCheckedChangeListener { _, checked ->
+                        val old = inspectionChecks[contract.id] ?: (false to false)
+                        inspectionChecks[contract.id] = checked to old.second
+                        next.isEnabled = canEnterRentalStep(contract, RentalStep.RETURN_QR)
+                    }
+                }
+                val damage = CheckBox(this@MainActivity).apply {
+                    text = "새로운 파손이나 고장이 없습니다"
+                    isChecked = checks.second
+                    setOnCheckedChangeListener { _, checked ->
+                        val old = inspectionChecks[contract.id] ?: (false to false)
+                        inspectionChecks[contract.id] = old.first to checked
+                        next.isEnabled = canEnterRentalStep(contract, RentalStep.RETURN_QR)
+                    }
+                }
+                addView(components.withTop(8))
+                addView(damage)
+            }.withTop(12))
+            content.addView(button("문제가 있어요", dangerStyle = true) {
+                screen = Screen.FEEDBACK
+                render()
+            }.withTop(12))
+        }
+        content.addView(next.apply { isEnabled = canEnterRentalStep(contract, RentalStep.RETURN_QR) }.withTop(12))
+    }
+
+    private fun renderReturnQr(contract: Contract) {
+        renderQrStage(contract, "end")
+        content.addView(paymentStatusCard(contract).withTop(12))
+    }
+
+    private fun renderReturned(contract: Contract) {
+        content.addView(card(Color.rgb(240, 253, 244)).apply {
+            addView(textView("✓ 반납이 완료되었습니다", 21, true, good))
+            addView(textView("반납 확인과 보증금 환급 완료는 다른 상태입니다.", 13, false, muted).withTop(8))
+        }.withTop(12))
+        content.addView(paymentStatusCard(contract, showRefundButton = false).withTop(12))
+        val reservation = reservations.find { it.id == contract.reservationId }
+        val id = reservation?.remoteId
+        val payment = paymentStates[id]
+        if (isRentalOwner(contract)) {
+            content.addView(button("이상 없음, 보증금 환급 승인") { requestRefund(contract) }
+                .apply { isEnabled = payment?.refundAllowed == true && id !in refundRequests && !paymentRefreshInProgress }
+                .withTop(12))
+            content.addView(button("문제 신고", dangerStyle = true) {
+                screen = Screen.FEEDBACK
+                render()
+            }.withTop(8))
+        }
+        if (payment?.refunded == true || contract.remoteId == null) {
+            content.addView(button("후기 작성", secondary = true) {
+                screen = Screen.FEEDBACK
+                render()
+            }.withTop(12))
+        }
     }
 
     private fun renderFeedback() {
@@ -2259,7 +2520,7 @@ class MainActivity : Activity() {
         }.withTop(12))
         val visible = notifications.filter { notification ->
             when (notificationFilter) {
-                "거래" -> notification.target in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.FEEDBACK)
+                "거래" -> notification.target in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.RENTAL_FLOW, Screen.FEEDBACK)
                 "채팅" -> notification.target == Screen.CHAT
                 else -> true
             }
@@ -2278,6 +2539,18 @@ class MainActivity : Activity() {
                     pendingNotificationReservation = notification.reservationId
                     pendingNotificationKind = if (notification.target == Screen.CHAT) "chat" else "reservation"
                     screen = notification.target
+                    notification.contractId?.let { activeContractId = it }
+                    if (screen == Screen.RENTAL_FLOW) {
+                        val contract = notification.contractId?.let { contractId -> contracts.find { it.id == contractId } }
+                            ?: notification.reservationId?.let { remoteId ->
+                            val reservation = reservations.find { it.remoteId == remoteId }
+                            contracts.find { it.reservationId == reservation?.id }
+                        } ?: activeContract()
+                        if (contract != null) {
+                            activeContractId = contract.id
+                            rentalStep = stepFor(contract) ?: RentalStep.HANDOVER_PHOTOS
+                        } else screen = Screen.RESERVATIONS
+                    }
                     chatDetailOpen = false
                     render(); loadRemoteReservations()
                 }
@@ -3171,13 +3444,16 @@ class MainActivity : Activity() {
                 if (sessionToken != token) return@runOnUiThread
                 result.onSuccess {
                     qrPayloads.remove("$contractId:$action")
+                    // The server already confirmed the one-time QR; keep the result visible until the read catches up.
+                    contract.status = if (action == "end") ContractStatus.COMPLETED else ContractStatus.RENTING
                     addNotification(
                         if (action == "end") "🔒" else "📦",
                         if (action == "end") "반납 확인 완료" else "대여가 시작되었어요",
                         if (action == "end") "반납이 확인되었습니다. 결제 내역에서 보증금 환급 상태를 확인해주세요." else "QR 인증이 완료되어 거래 상태가 대여중으로 변경되었습니다.",
                         Screen.RESERVATIONS
                     )
-                    screen = if (action == "end") Screen.RESERVATIONS else Screen.QR
+                    screen = Screen.RENTAL_FLOW
+                    rentalStep = if (action == "end") RentalStep.RETURNED else RentalStep.STARTED
                     loadRemoteReservations()
                     loadCurrentProfile()
                     toast(if (action == "end") "반납이 확인되었습니다. 보증금 환급은 별도로 진행해주세요." else "대여중 상태로 변경되었습니다.")
@@ -3191,7 +3467,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun loadRemoteReservations() {
+    private fun loadRemoteReservations(refreshPayments: Boolean = true) {
         val token = sessionToken ?: return
         val account = sessionUserId
         if (reservationLoading) return
@@ -3216,12 +3492,21 @@ class MainActivity : Activity() {
                         reservations.clear(); contracts.clear()
                         snapshot.reservations.mapNotNull(::remoteToReservation).forEach(reservations::add)
                         snapshot.contracts.mapNotNull(::remoteToContract).forEach(contracts::add)
-                        if ("reservations" in pendingRefreshLoads && server.isConfigured) {
-                            pendingRefreshLoads.add("payments")
-                        }
-                        loadPaymentStates()
                         remoteChatRooms = snapshot.rooms
                         archivedReservations = snapshot.archived
+                        if (screen == Screen.RENTAL_FLOW) {
+                            val active = activeContract()
+                            if (active != null) {
+                                if (rentalStep == RentalStep.HANDOVER_QR && active.status == ContractStatus.RENTING)
+                                    rentalStep = RentalStep.STARTED
+                                else if (rentalStep == RentalStep.RETURN_QR && active.status == ContractStatus.COMPLETED)
+                                    rentalStep = RentalStep.RETURNED
+                            }
+                        }
+                        if ("reservations" in pendingRefreshLoads && server.isConfigured && refreshPayments) {
+                            pendingRefreshLoads.add("payments")
+                        }
+                        if (refreshPayments) loadPaymentStates()
                         val chatReservationChanged = previousChatReservation != reservations.find { it.id == selectedChatReservationId }
                         if (pendingNotificationReservation != null) {
                             val reservation = reservations.find { it.remoteId == pendingNotificationReservation }
@@ -3229,9 +3514,14 @@ class MainActivity : Activity() {
                                 val kind = pendingNotificationKind
                                 pendingNotificationReservation = null
                                 if (kind == "chat" || kind == "schedule") openReservationChat(reservation)
-                                else { screen = Screen.RESERVATIONS; reservationTab = if (itemById(reservation.itemId).remoteOwnerId == sessionUserId) "빌려준 물품" else "빌린 물품"; render() }
+                                else {
+                                    reservationTab = if (itemById(reservation.itemId).remoteOwnerId == sessionUserId) "빌려준 물품" else "빌린 물품"
+                                    val contract = contracts.find { it.reservationId == reservation.id }
+                                    if (screen == Screen.RENTAL_FLOW && contract != null) openRentalFlow(contract)
+                                    else { screen = Screen.RESERVATIONS; render() }
+                                }
                             }
-                        } else if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE) || screen == Screen.CHAT && (!chatDetailOpen && changed || chatDetailOpen && chatReservationChanged)) render()
+                        } else if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.RENTAL_FLOW, Screen.PROFILE) || screen == Screen.CHAT && (!chatDetailOpen && changed || chatDetailOpen && chatReservationChanged)) render()
                         if (screen == Screen.CHAT && chatDetailOpen) loadRemoteChat()
                     }.onFailure { toast("예약·채팅 조회 실패: ${it.message}") }
                 } finally {
@@ -3683,12 +3973,12 @@ class MainActivity : Activity() {
         if (!server.isConfigured) {
             paymentStateError = "결제 서버 연결을 확인해주세요."
             paymentRefreshInProgress = false
-            if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
+            if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.RENTAL_FLOW, Screen.PROFILE)) render()
             return
         }
         val ids = reservations.mapNotNull { it.remoteId }.distinct()
         paymentRefreshInProgress = true
-        if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
+        if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.RENTAL_FLOW, Screen.PROFILE)) render()
         val readVersion = ++paymentReadVersion
         Thread {
             val results = ids.associateWith { id -> runCatching { server.payment(id, token) } }
@@ -3704,7 +3994,7 @@ class MainActivity : Activity() {
                         val id = reservations.find { it.id == contract.reservationId }?.remoteId
                         contract.refunded = paymentStates[id]?.refunded == true
                     }
-                    if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.QR, Screen.PROFILE)) render()
+                    if (screen in setOf(Screen.RESERVATIONS, Screen.TRANSACTION, Screen.RENTAL_FLOW, Screen.PROFILE)) render()
                 } finally {
                     finishPullRefresh("payments", results.values.all { it.isSuccess })
                 }
@@ -3712,7 +4002,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun paymentStatusCard(contract: Contract): LinearLayout = card().apply {
+    private fun paymentStatusCard(contract: Contract, showRefundButton: Boolean = true): LinearLayout = card().apply {
         val reservation = reservations.find { it.id == contract.reservationId }
         val id = reservation?.remoteId
         val payment = paymentStates[id]
@@ -3746,7 +4036,7 @@ class MainActivity : Activity() {
                     loadPaymentStates()
                 }
             }.withTop(8))
-            if (payment?.refundAllowed == true && id !in refundRequests) {
+            if (showRefundButton && payment?.refundAllowed == true && id !in refundRequests) {
                 addView(button("보증금 ${money(payment.refundableAmount)} 환급 요청") { requestRefund(contract) }.withTop(8))
             }
         }
@@ -3836,7 +4126,7 @@ class MainActivity : Activity() {
                             .onFailure { toast("서명은 저장됐지만 PDF 생성은 실패했습니다. 계약서에서 다시 시도하세요.") }
                         loadRemoteReservations()
                         val complete = signed.ownerSigned && signed.borrowerSigned
-                        addNotification("✍", if (complete) "전자 계약 완료" else "전자 서명 완료", if (complete) "상태 사진을 등록하고 거래를 시작해주세요." else "상대방의 서명을 기다리고 있습니다.", Screen.QR)
+                        addNotification("✍", if (complete) "전자 계약 완료" else "전자 서명 완료", if (complete) "상태 사진을 등록하고 거래를 시작해주세요." else "상대방의 서명을 기다리고 있습니다.", if (complete) Screen.RENTAL_FLOW else Screen.TRANSACTION, contract.id)
                         toast(if (complete) "양측 서명이 완료되었습니다." else "내 서명이 저장되었습니다. 상대방 서명을 기다립니다.")
                     }.onFailure { error -> toast("서명 실패: ${error.message ?: "결제와 권한을 확인하세요."}") }
                 }
@@ -3858,10 +4148,9 @@ class MainActivity : Activity() {
             ContractSigner("상대방", false, 0, null, null), null
         ))
         contract.status = ContractStatus.SIGNED
-        addNotification("✍", "전자 계약 완료", "대여 전 상태 사진을 등록하고 QR 인증을 진행해주세요.", Screen.QR)
-        screen = Screen.QR
+        addNotification("✍", "전자 계약 완료", "대여 전 상태 사진을 등록하고 QR 인증을 진행해주세요.", Screen.RENTAL_FLOW, contract.id)
+        openRentalFlow(contract)
         toast("전자 계약서 서명이 완료되었습니다.")
-        render()
     }
 
     private fun saveContractSpecialTerms(contract: Contract, terms: String) {
@@ -3946,8 +4235,8 @@ class MainActivity : Activity() {
         }.onFailure { toast("PDF 뷰어가 없습니다. 공유 버튼으로 열어주세요.") }
     }
 
-    private fun addNotification(icon: String, title: String, body: String, target: Screen) {
-        notifications.add(0, AppNotification(nextNotificationId++, icon, title, body, "방금", target))
+    private fun addNotification(icon: String, title: String, body: String, target: Screen, contractId: Int? = null) {
+        notifications.add(0, AppNotification(nextNotificationId++, icon, title, body, "방금", target, contractId = contractId))
     }
 
     private fun loadAdminReports() {
