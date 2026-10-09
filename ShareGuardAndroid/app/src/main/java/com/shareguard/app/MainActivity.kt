@@ -2794,6 +2794,7 @@ class MainActivity : Activity() {
 
     private fun showSettings() {
         val prefs = getSharedPreferences("shareguard_settings", MODE_PRIVATE)
+        lateinit var dialog: AlertDialog
         val panel = column {
             setPadding(dp(18), dp(8), dp(18), dp(8))
             listOf(
@@ -2809,15 +2810,23 @@ class MainActivity : Activity() {
                 }.withTop(10))
             }
             addView(textView("기기 알림 표시 여부에 적용됩니다. 앱 알림함의 거래 기록은 유지됩니다.", 11, false, muted).withTop(12))
+            if (!sessionToken.isNullOrBlank() && profileLoaded && currentUser().verified) {
+                addView(button("PASS 인증 다시 확인", secondary = true) {
+                    dialog.dismiss()
+                    startPassVerification()
+                }.withTop(16))
+                addView(textView("기존 인증 상태와 신뢰점수는 유지됩니다.", 11, false, muted).withTop(6))
+            }
         }
-        AlertDialog.Builder(this)
+        dialog = AlertDialog.Builder(this)
             .setTitle("설정")
             .setView(panel)
             .setNegativeButton("닫기", null)
             .apply {
                 if (!sessionToken.isNullOrBlank()) setPositiveButton("로그아웃") { _, _ -> signOut() }
             }
-            .show()
+            .create()
+        dialog.show()
     }
 
     private fun addMyPostsToProfile() {
@@ -3431,7 +3440,6 @@ class MainActivity : Activity() {
                 loadRemoteReservations()
             }.withTop(12))
             if (profileLoaded && !user.verified) addView(button("본인 인증 시작") { startPassVerification() }.withTop(8))
-            addView(button("로그아웃", secondary = true) { signOut() }.withTop(8))
             if (BuildConfig.DEBUG && profileLoaded && user.role == "관리자") addView(button("관리자 화면", secondary = true) {
                 screen = Screen.ADMIN
                 loadAdminReports()
